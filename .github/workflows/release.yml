@@ -1,0 +1,61 @@
+# 用法：Actions → "Publish release assets" → Run workflow → 填 tag（如 v6.21.1）
+#
+# 为什么让 Actions 来做：上传用的 PAT 放在 GitHub Environment Secret 里，
+# 只有 workflow 能读（这是 GitHub 的安全边界，本地进程拿不到）。
+# 于是流程是「产物提交进仓 → Actions 用 secrets.AI 建 Release」，PAT 不落地到任何开发机。
+#
+# ⚠️ 权限要求（PAT 需具备）：Releases: Read & write + Contents: Read & write
+name: Publish release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（如 v6.21.1）'
+        required: true
+      notes:
+        description: 'Release 说明（留空则用 tag）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # 建 Release、上传资产
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # ⚠️ 下面这个名字要与你建的 GitHub Environment **同名**（secret AI 挂在它下面）
+    environment: hp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.AI }}
+          TAG: ${{ inputs.tag }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(assets/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::assets/ 为空，无可发布产物"
+            exit 1
+          fi
+
+          echo "待发布 ${#files[@]} 个文件:"
+          printf '  %s\n' "${files[@]}"
+
+          # 同名资产先删再传，避免重复运行时报 'already_exists'
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，删除后重建"
+            gh release delete "$TAG" --yes
+          fi
+
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "${NOTES:-$TAG}" \
+            "${files[@]}"
+
+          echo "✓ Release $TAG 已创建"
+          gh release view "$TAG"

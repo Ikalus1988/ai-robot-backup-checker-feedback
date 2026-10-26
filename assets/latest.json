@@ -1,0 +1,11 @@
+{
+  "version": "v6.21.1",
+  "notes": "v6.21.1 安全：二进制不含内嵌凭据",
+  "pub_date": "2026-10-26T08:38:01.259Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMFNUZDYyUnpDVk53a0pTWVlNTmx3VXlITjdMVGN3WkliM1BlUVlwQ0ZQNlc3OGRuUm1UenFGLzVuOHlFUmRNYkJhOS9VZWhZUlhldFM2TDNOV016ZVVKYkx6OS9PY3dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyOTkwODU2CWZpbGU65py65Zmo5Lq656iL5bqP5qOA5p+lJui9rOaNouW3peWFt182LjIxLjFfeDY0LXNldHVwLm5zaXMuemlwCnk5eE91K2IzdHJMdFBYeHcvc25WODVQbjdVWk8yQTJYZFlZcXBHaUFORkowZEFKdUp2UTUydU90YnF4NncxWXF2bzZvUDlac3U5b2ljV2R3K2QzZkN3PT0K",
+      "url": "https://github.com/Ikalus1988/ai-robot-backup-checker-feedback/releases/latest/download/robot-backup-checker_6.21.1_x64-setup.nsis.zip"
+    }
+  }
+}
