@@ -1,37 +1,63 @@
 # 机器人程序检查&转换工具 — 发布产物
 
-本仓**只放发布产物**（安装包 / 更新签名 / `latest.json`），不含源码。
+本仓**只放发布产物**，不含源码。源码在内网 GitLab（`internal`，不公开）。
 
-- 源码仓：内网 GitLab（`internal`，不公开）
-- 本仓：产物公开分发，供**自动更新**拉取
+---
 
-## 自动更新怎么用到本仓
+## 两种用法，按你的场景选
 
-应用启动时按顺序请求下列端点取 `latest.json`，再按其中的 `url` 下载安装包：
+| | **免安装版（绿色）** | **安装版** |
+|---|---|---|
+| 文件 | `robot-backup-checker_<版本>_portable.exe` | `robot-backup-checker_<版本>_x64-setup.exe` |
+| 怎么用 | 下载后**双击即用**，拷 U 盘/桌面都行 | 双击安装 → 快捷方式启动 |
+| 适合 | 工位机不方便装软件、临时用、随身带 | 固定工位长期用 |
+| 卸载 | 删掉那个 exe 即可 | 控制面板卸载 |
+| **版本更新** | 启动时提示「有新版」+ 下载链接，**手动换** | 启动时**自动更新**，静默装完重启 |
+
+> **一句话**：想省事长期用 → 装机版；想拷着走 → 绿色版。
+> 两者功能完全一致，只是更新方式不同。
+
+---
+
+## 下载
+
+到 [Releases](https://github.com/Ikalus1988/ai-robot-backup-checker-feedback/releases/latest) 取最新版：
+
+| 文件 | 用途 |
+|---|---|
+| `…_portable.exe` | **免安装版**，下载即用 |
+| `…_x64-setup.exe` | **安装版**，双击安装 |
+| `…_x64-setup.nsis.zip` + `.sig` | 自动更新用的包（用户不用管） |
+| `latest.json` | 自动更新清单（用户不用管） |
+
+---
+
+## 自动更新怎么工作（装机版）
+
+应用启动时请求：
 
 ```
 https://github.com/Ikalus1988/ai-robot-backup-checker-feedback/releases/latest/download/latest.json
 ```
 
-`latest.json` 里的 `url` 指向同名 release 的安装包：
+按其中的 `url` 下载更新包，**校验 minisign 签名**通过后静默安装。
 
-```
-https://github.com/Ikalus1988/ai-robot-backup-checker-feedback/releases/latest/download/robot-backup-checker_<版本>_x64-setup.nsis.zip
-```
-
-**要求**：`latest.json` 与它描述的安装包必须在**同一个 release** 里，
+**要求**：`latest.json` 与它描述的更新包必须在**同一个 release** 里，
 这样 `/releases/latest/` 永远指向自洽的一组，不会出现「清单说 A 包却是 B」。
+
+---
 
 ## 为什么资产文件名是 ASCII
 
 产品名是中文，但**发布资产名必须 ASCII**（`robot-backup-checker_<版本>_…`）：
 实测内网前置代理对含中文字符的 multipart 文件名直接 `400 Bad Request`，
-URL 里的中文/`&` 也容易被各层网关改写。本地构建产物仍叫中文名（用户可读），
-只是上传时改用 ASCII 名。
+URL 里的中文/`&` 也容易被各层网关改写。**下载后你可以随意改名**（比如改回中文名放桌面）。
+
+---
 
 ## 安全：二进制不含任何内嵌凭据
 
-自 v6.21.1 起，安装包**不内嵌任何 token**。
+自 v6.21.1 起，安装包与绿色版都**不内嵌任何 token**。
 （此前版本内嵌过一枚 GitLab PAT —— 拆两半只是混淆，`strings` 仍可抽出。
 公开分发的二进制里只要留着活凭据就等于泄露，故已清空。）
 
@@ -41,7 +67,9 @@ URL 里的中文/`&` 也容易被各层网关改写。本地构建产物仍叫�
 
 两者皆无时，提交会**明报 `auth` 错**，不静默降级。
 
+---
+
 ## 完整性校验
 
-每个 release 附 `.sig`（minisign 签名，对应 `latest.json` 里的 `signature` 字段）。
+更新包附 `.sig`（minisign 签名，对应 `latest.json` 的 `signature` 字段）。
 应用更新前会校验签名，签名不匹配则拒绝安装。
