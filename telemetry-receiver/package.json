@@ -1,0 +1,19 @@
+{
+  "name": "rbc-telemetry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "机器人程序检查&转换工具 · 匿名使用统计接收端（CF Worker + D1）",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit",
+    "db:init": "wrangler d1 execute telemetry-db --file schema.sql",
+    "db:query": "wrangler d1 execute telemetry-db --command",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250429.0",
+    "typescript": "^5.8.0"
+  }
+}

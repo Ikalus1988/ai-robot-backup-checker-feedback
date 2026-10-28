@@ -1,0 +1,48 @@
+name = "rbc-telemetry"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# CF 账号 ID 见 wrangler.local.toml（不入仓）
+# ⚠️ 本文件是**公开版**：CF 账号 ID 与 D1 库 ID 均已抽走，不含真实资源标识。
+#    实际部署请复制 wrangler.toml.example → wrangler.local.toml 填入真实值
+#    （该文件不入仓，见 .gitignore），并用 `--config wrangler.local.toml` 部署。
+#
+# 自定义域（不是 zone route）：与主站的 catch-all / api / mcp 路径匹配完全解耦。
+# CF 会自动为该子域创建 DNS 记录 → 指向本 Worker。
+routes = [
+  { pattern = "telemetry.misakanet.org", custom_domain = true }
+]
+
+# 跑飞账单刹车：付费档单次请求 CPU 默认 30 秒，必须显式压低。
+# CF 官方在 Workers Paid 定价页写明 limits.cpu_ms 用于
+# "prevent accidental runaway bills or denial-of-wallet attacks"。
+[limits]
+cpu_ms = 50_000
+
+# 每日一次：刷新 daily_rollup + 清理超期明细。
+[triggers]
+crons = ["23 4 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "telemetry-db"
+# D1 库 ID 见 wrangler.local.toml（不入仓）
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[vars]
+WEBSITE_ID = "robot-checker"
+
+# 每日成本闸门（统一口径：按"事件数/请求数"计，不按行数计）
+# 折合 ≈ 4 万台日活设备；告警线取闸门线的 80%（计划书附录 E）
+GATE_REQ_DAY = "100000"
+GATE_EVT_DAY = "100000"
+GATE_STORE_MAX_MB = "4096"
+
+# 明细保留天数（90 天；删除也计写额度，稳态下删除成本 ≈ 插入成本）
+RETENTION_DAYS = "90"
+
+[observability]
+enabled = true
+
+# DASHBOARD_TOKEN 不要放在这里 —— 用 `wrangler secret put DASHBOARD_TOKEN`

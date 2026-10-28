@@ -1,8 +1,12 @@
 # 统计上线 · 实施交接书（给另一台电脑上的实施 agent）
 
-> v1 · 2026-10-28 · 配套计划书：`docs/telemetry-launch-plan.md`
+> v1.1 · 2026-10-28 · 配套计划书：`docs/telemetry-launch-plan.md`
 > **本文件自包含**：实施所需的一切接口/规格/命令/判据都在这里，不依赖任何对话背景。
 > 已拍板口径：**默认开 + 界面可关 + 明示**（选项见计划书 §6）。
+>
+> **v1.1 变更（2026-10-28）**：**工作项 A（Worker 接收端）已完成并上线**，
+> 代码在本仓 `telemetry-receiver/`，端点 `https://telemetry.misakanet.org/api/send`。
+> 本文件的 §3 已标注"被实现取代"，**实施时以 `telemetry-receiver/` 实际代码为准**。
 
 ---
 
@@ -11,9 +15,9 @@
 | 项 | 归属 |
 |---|---|
 | 计划与接口（本文件 + 计划书） | ✅ 已完成（本机 agent） |
-| **A. Cloudflare Worker 接收端**（代码 + D1 + 看板 + 部署） | 实施 agent |
-| **B. 软件端小改**（默认配置 bootstrap + 界面开关 + 隐私声明） | 实施 agent |
-| C. 验收（§7 判据全绿） | 实施 agent |
+| **A. Cloudflare Worker 接收端**（代码 + D1 + 看板 + 部署） | ✅ **已完成并上线**（代码在本仓 `telemetry-receiver/`，见 §3 顶部说明） |
+| **B. 软件端小改**（默认配置 bootstrap + 界面开关 + 隐私声明） | 实施 agent（**未开始**；客户端源码在内网 GitLab） |
+| C. 验收（§7 判据全绿） | 实施 agent（接收端侧已过黑盒验收，见 §3） |
 | D. 发版 6.23.0（含统计生效） | 实施 agent |
 
 **完成定义（DoD）**：A+B+C+D 全部达成，看板能数出「今日新用户/7 日 DAU」，
@@ -126,17 +130,30 @@
 
 ## 3. 工作项 A · Cloudflare Worker 接收端
 
-**技术栈**：Cloudflare Workers（TypeScript）+ D1（SQLite）。免费额度足够
-（Workers ≈10 万请求/天、D1 5GB/500 万读/天——按 2 请求/天·台 ≈ 数万用户冗余）。
+**技术栈**：Cloudflare Workers（TypeScript）+ D1（SQLite）。
+⚠️ **账号已升级 Workers Paid（$5/月档）** → "免费额度足够"的说法已作废，
+现在无日上限，头号风险是**账单失控**，成本闸门是唯一的刹车。详见计划书 §5.3。
+
+> ⚠️ **以下端点表 / schema / SQL 是 v1 契约草案，已被实现取代（2026-10-28）**。
+> 接收端**已实现并上线**，代码在本仓 `telemetry-receiver/`，
+> **实施时以那里的实际代码与 `telemetry-receiver/schema.sql` 为准**。
+> 与本草案的差异（勿照抄）：
+> - 表从 2 张增到 4 张：多 `daily_rollup`（看板唯一读源）与 `gate`（成本闸门状态）
+> - `events` 增 `event_id`（幂等键，唯一索引）、`recv_ts`（接收时间）两列
+> - **删掉 `idx_events_device` 索引**（每条 INSERT 多 1 行写，写额度直接省 33%）
+> - 端点多一个 `GET /healthz`（存活 + 今日闸门用量，监控用）
+> - `POST /api/send` 多一个 **204** 语义（闸门触发时主动丢弃，2xx，客户端不重试）
+> - `GET /api/export` 属第二阶段，**当前未实现**
 
 **端点**：
 | 端点 | 行为 |
 |---|---|
-| `POST /api/send` | 校验（§2.1/2.2）→ INSERT `events` + upsert `first_seen` → 200 `{ok:true}`；非法 400；D1 失败 503 |
+| `POST /api/send` | 校验（§2.1/2.2）→ INSERT `events` + upsert `first_seen` → 200 `{ok:true}`；闸门触发 → **204**；非法 400；D1 失败 503 |
 | `GET /dashboard?token=<口令>` | 单页看板：今日新增 / 昨日新增 / 7日DAU / 7日留存 / 功能事件 Top / 版本分布 |
-| `GET /api/export?from=&to=&token=<口令>` | CSV 导出（远期接飞书用） |
+| `GET /healthz` | 存活 + 今日闸门用量（req/evt/dropped/paused/over_budget） |
+| `GET /api/export?from=&to=&token=<口令>` | CSV 导出（远期接飞书用，**第二阶段，当前未实现**） |
 
-**D1 schema**：
+**D1 schema**（v1 草案，以 `telemetry-receiver/schema.sql` 为准）：
 ```sql
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +186,14 @@ wrangler d1 create telemetry-db                      # database_id → wrangler.
 wrangler d1 execute telemetry-db --file schema.sql
 npx wrangler deploy                                  # → https://telemetry-receiver.<子域>.workers.dev
 ```
+
+> ⚠️ **本节已被实现取代（2026-10-28）**：接收端**已实现并上线**，
+> 代码在本仓 `telemetry-receiver/`（TypeScript + D1，含成本闸门、cron 聚合、
+> 幂等键、4 张表、看板与 `/healthz`）。
+> **实施时以 `telemetry-receiver/` 的实际代码为准，不要照上面这份 v1 骨架重搭** ——
+> 它的 schema 缺 `event_id` / `recv_ts` / `daily_rollup` / `gate`，
+> 且 `wrangler d1 execute` **必须加 `--remote`**（不加会建到本地库，线上表根本没建）。
+> 完整契约与口径见 `docs/telemetry-launch-plan.md`（v3.3）。
 
 **防刷底线**：website 校验 + UUID 格式校验 +（可选）CF Rate Limiting 同 IP 10 次/分。
 **部署后**：把最终 `/api/send` 端点写回软件端常量（工作项 B-1）。

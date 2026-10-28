@@ -1,0 +1,10 @@
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+*.log
+.DS_Store
+
+# 含真实 CF 账号 ID / D1 库 ID 的本地部署配置，不入仓
+wrangler.local.toml
+wrangler.toml.local

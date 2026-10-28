@@ -1,0 +1,44 @@
+# 部署用真实配置模板 —— 复制成 wrangler.local.toml 后填入真实值
+#
+#   cp wrangler.toml.example wrangler.local.toml
+#   # 填入 account_id / database_id
+#   npx wrangler deploy --config wrangler.local.toml
+#
+# wrangler.local.toml 不入仓（见 .gitignore）。
+# 本模板里出现的 ID 是占位符，不是真实资源标识。
+
+name = "rbc-telemetry"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# CF 账号 ID（Dashboard → Workers & Pages → 右侧 Account ID）
+account_id = "REPLACE_WITH_YOUR_CF_ACCOUNT_ID"
+
+routes = [
+  { pattern = "telemetry.misakanet.org", custom_domain = true }
+]
+
+[limits]
+cpu_ms = 50_000
+
+[triggers]
+crons = ["23 4 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "telemetry-db"
+# wrangler d1 create telemetry-db 的输出
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[vars]
+WEBSITE_ID = "robot-checker"
+GATE_REQ_DAY = "100000"
+GATE_EVT_DAY = "100000"
+GATE_STORE_MAX_MB = "4096"
+RETENTION_DAYS = "90"
+
+[observability]
+enabled = true
+
+# DASHBOARD_TOKEN 走 secret：wrangler secret put DASHBOARD_TOKEN

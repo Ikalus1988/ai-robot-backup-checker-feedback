@@ -1,6 +1,10 @@
 # 机器人程序检查&转换工具 — 发布产物
 
-本仓**只放发布产物**，不含源码。源码在内网 GitLab（`internal`，不公开）。
+本仓**主要放发布产物**，不含**客户端**源码。客户端源码在内网 GitLab（`internal`，不公开）。
+
+> **例外：`telemetry-receiver/`** —— 遥测接收端（Cloudflare Worker + D1）的源码**在本仓**。
+> 它是本产品的服务端组件，与客户端源码不同源，公开以便审计与复现。
+> 仓库里**不含**任何真实 CF 资源标识符或密钥（部署用 `telemetry-receiver/wrangler.toml.example` 填值）。
 
 ---
 

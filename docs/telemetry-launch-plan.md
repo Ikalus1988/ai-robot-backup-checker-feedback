@@ -8,7 +8,9 @@
 > **v3.1 新增**：§5.9「与 MisakaNet 的交叉运行边界」——把"能隔离的"与"隔离不了的"分开；**新发现 zone 级安全规则（Bot Fight Mode / WAF / IP 限流）会连坐子域**，客户端 UA `robot-backup-checker-telemetry` 极易被判为机器人 → 被拦返 4xx → 按契约丢弃 → **遥测静默零数据**。新增验收判据 14（真实 UA 实测）与部署纪律一条。
 > 实施由**另一台电脑的 agent** 按 `docs/telemetry-handoff.md` 完成。
 > ⚠️ **取本文档请用 `git clone` 或 `gh api repos/.../contents/docs/telemetry-launch-plan.md`，不要用 `raw.githubusercontent.com`** —— 2026-10-28 实测：本次推送后 raw 仍返回旧版（其 CDN 缓存未刷新），照旧版实现会沿用已作废的免费档假设（30 天保留期、3,000–5,000 台设备上限、缺 `limits.cpu_ms` 刹车）。
-> ⚠️ **交接书 `docs/telemetry-handoff.md` 尚未同步本计划书的变更**（同步清单见附录 F，共 8 处）——**在同步完成前不要开始实施**，否则会拿到两份互相矛盾的契约。
+> ⚠️ **交接书 `docs/telemetry-handoff.md` 已同步至 v1.1（2026-10-28）** —— 附录 F 的 8 处差异中，**§3 接收端部分**已按实际实现改写并标注"被实现取代"，其余（软件端相关）仍待同步。
+> **工作项 A（Worker 接收端）已完成并上线**，代码在本仓 `telemetry-receiver/`；**软件端（工作项 B）尚未开始**。
+> ⚠️ **实施前仍需核对附录 F 的剩余条目**（尤其软件端契约），避免拿到两份互相矛盾的契约。
 > 配套调研《2026-10-28-misakanet挂靠可行性与风险.md》**仅本地留存、未入本仓**；本计划书已内联其全部结论与数字，无需另找。
 >
 > **版本改动速览（评审必读）**
@@ -17,6 +19,7 @@
 > | v2 | 挂靠形态定案（子域 custom domain）；**修正 v1 的容量估算错误**——CF 免费配额是账号级而非单服务可用；新增配额切片、204 降级、幂等键、客户端时间戳；§5 整章重写 |
 > | **v3** | **套餐升级为 Workers Paid** → §5.3 从"配额切片生存预算"改为"**容量与成本模型**"；保留期 30 天 → **90 天明细 + 聚合长期**（存储不再受限）；**新增 `limits.cpu_ms` 硬刹车**；新增成本闸门与账单告警；H1/H2/H3 的定性全部改写 |
 | **v3.1** | 新增 §5.9 交叉运行边界；**新发现 zone 级 Bot/WAF 规则连坐子域**（真实 UA 被拦 → 4xx → 静默丢数据）；新增验收判据 14 |
+| **v3.3** | **Worker 接收端已实现并上线**，代码进本仓 `telemetry-receiver/`（§5.6 部署纪律的"禁止推进公开仓"改为带脱敏边界的"允许"）；交接书同步至 v1.1，§3 标注"被实现取代" |
 
 ---
 
@@ -332,28 +335,28 @@ crons = ["23 4 * * *"] # 账号 Cron 250 个上限，已用 2，此处占第 3
 #    注意：本机 ~/.config/.wrangler 的 OAuth 令牌已过期，实施机必须重新登录或用 API Token
 wrangler login            # 或 export CLOUDFLARE_API_TOKEN=...
 
-# 1) 建仓（内网 GitLab，不进公开仓）
-mkdir telemetry-receiver && cd telemetry-receiver
-npm create cloudflare@latest -- .     # Worker + TypeScript
+# 1) 取代码（本仓 telemetry-receiver/ 目录；部署配置用本地副本填真实 ID）
+cp -r telemetry-receiver /tmp/telemetry-receiver && cd /tmp/telemetry-receiver
+cp wrangler.toml.example wrangler.local.toml   # 填入真实 account_id / database_id
 
-# 2) 建 D1 库（独立库；账号内第 3 个）
-wrangler d1 create telemetry-db      # database_id 写入 wrangler.toml
+# 2) 建 D1 库（独立库）
+wrangler d1 create telemetry-db      # database_id 写入 wrangler.local.toml
 
 # 3) 建表（schema.sql 见 §5.4）
-wrangler d1 execute telemetry-db --file schema.sql
+wrangler d1 execute telemetry-db --file schema.sql --remote   # ⚠️ 必须 --remote
 
-# 4) wrangler.toml 要点（见 §5.5）
+# 4) wrangler.local.toml 要点（见 §5.5）
 #    name = "rbc-telemetry"
 #    compatibility_date = "<近 90 天内>"      # zone 审计会查这个
 #    [limits] cpu_ms = 50_000                  # 跑飞账单刹车
 #    [triggers] crons = ["23 4 * * *"]
-#    [[d1_databases]] binding = "TELEMETRY_DB" / database_id = "<id>"
-#    [vars] TELEMETRY_WEBSITE_ID = "robot-checker"
+#    [[d1_databases]] binding = "DB" / database_id = "<id>"
+#    [vars] WEBSITE_ID = "robot-checker"
 #    # dashboard token 走 secret，不进 vars
 #    wrangler secret put DASHBOARD_TOKEN
 
 # 5) 部署 + 挂自定义域
-npx wrangler deploy
+npx wrangler deploy --config wrangler.local.toml
 #    然后在 Dashboard: Workers & Pages → rbc-telemetry → Settings → Domains & Routes
 #    → Add Custom Domain → telemetry.misakanet.org
 #    （或用 API POST /accounts/{acct}/workers/domains）
@@ -370,7 +373,13 @@ npx wrangler deploy
 - **必须用真实客户端 UA 测一次**（`User-Agent: robot-backup-checker-telemetry` + 真实报文）→ 期望 200，**不能是 403/503**：
   zone 级的 WAF / Rate Limiting / **Bot Fight Mode** 规则会**连坐子域**，而本客户端的 UA 极易被判为机器人；一旦被拦返回 4xx，按契约即"毒报文丢弃" → **遥测静默零数据且看板无报错**（详见 §5.9）；
 - **不验证不算部署完成**（对应交接书坑 2「构建成功 ≠ 产物含新代码」）；
-- 禁止把 Worker 代码推进 `ai-robot-backup-checker-feedback`（公开仓，其 README 明写"只放发布产物"）。
+- Worker 代码放在**本仓 `telemetry-receiver/` 目录**（v3.3 修订）：
+  它是本产品的服务端组件，公开以便审计与复现；
+  **但仓内不含任何真实 CF 资源标识符或密钥** —— `wrangler.toml` 用占位符，
+  真实 `account_id` / `database_id` 走不入仓的 `wrangler.local.toml`，
+  `DASHBOARD_TOKEN` 走 `wrangler secret put`。
+  （原禁令是"Worker 代码不进公开仓"，现按上述边界修订；
+  **客户端**源码仍只在内网 GitLab，不进本仓。）
 
 ### 5.7 防刷与成本闸门
 
@@ -416,7 +425,8 @@ npx wrangler deploy
 **代码层面：绝不进 MisakaNet 仓**。若把遥测代码放进 MisakaNet 仓，会连带 7 处交叉（`apply-d1-schema.yml` 跨库污染 schema、`d1-backup.yml` 把遥测明细纳入主服务备份、`cf-diagnostics.yml` 把遥测错误算进主服务故障噪音、`deploy-freshness.yml` 混淆 COMMIT_SHA 健康语义、`test_worker_compat_dates.py` 需登记、GitHub Environment `hp` 的 PAT 权限共用与审批排队、该仓"PR 列表给贡献者看 / 交接件不入仓"的规矩被破坏）。
 
 **因此**：
-- 遥测代码 → **内网 GitLab 新建 `telemetry-receiver` 仓**，独立 CI，**独立 GitHub Environment + 独立 PAT**；
+- 遥测代码 → **本仓 `telemetry-receiver/` 目录**（v3.3 修订，原为"内网 GitLab 新建仓"），
+  独立 CI，**独立 GitHub Environment + 独立 PAT**；
 - **不并进 `misakanet-register-proxy` worker**；
 - **不复用 MisakaNet 的 D1 库，尤其不复用 `MISAKANET_KV`**（它存着主服务的节点注册与限流计数，复用即等于把一个产品的数据落进另一个产品的存储边界）；
 - 只在 MisakaNet 仓做**两处登记**：① worker 清单 / `test_worker_compat_dates.py` 里登记 `rbc-telemetry` 及其 compat_date；② 文档加一行"账号内另有一个独立 Worker（遥测接收端），与本仓无代码耦合，仅共享 CF 账号与域名"。
