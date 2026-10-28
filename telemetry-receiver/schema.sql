@@ -17,8 +17,15 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id) WHERE event_id <> '';
 -- 看板聚合用
 CREATE INDEX IF NOT EXISTS idx_events_name_ts ON events(name, ts);
--- 刻意不建 idx_events_device：每个索引 = 每条 INSERT 多 1 行写
---   （3 行/事件 → 2 行/事件，写额度直接省 33%）
+-- 时间索引：看板的「今日实时算」按 ts 过滤，没有它会全表扫。
+-- 实测（2026-10-28，50 万行跨 90 天分布、今日占 1.1%）：
+--   有此索引 → rows_read=5,670 / 3.9ms；无 → rows_read=500,171 / 36.8ms（88 倍差距）。
+-- 代价：每条 INSERT 多 1 行写（写额度 +1 行/事件）。
+--   写侧代价 ≈ 3M 行/月（D1 付费档 50M/月包含额度的 6%），
+--   读侧收益是看板从 O(全表) 降到 O(当日量) —— 量越大越划算，故建。
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+-- 刻意不建 idx_events_device：看板的设备去重改走 rollup 聚合表，
+--   不在明细上做 COUNT(DISTINCT)（否则每次开看板都是全表去重）
 
 -- 新用户口径依据：只由 app_installed 建立
 CREATE TABLE IF NOT EXISTS first_seen (

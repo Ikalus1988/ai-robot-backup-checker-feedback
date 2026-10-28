@@ -222,28 +222,62 @@ async function readGate(env: Env, day: string): Promise<GateRow> {
   return row ?? { req_count: 0, evt_count: 0, dropped: 0, paused: 0 };
 }
 
-// ── 看板：只读 daily_rollup ───────────────────────────────────
+// ── 看板：今日实时算 + 历史读 daily_rollup ─────────────────────
+// 为什么不能只读 daily_rollup：rollup 由每日 cron（04:23 UTC）生成，
+// 意味着「今天」的数据要等到次日才可见 —— 部署后到首次 cron 之间看板几乎是空的，
+// cron 一挂看板就永久失灵。
+// 口径一致性：今日实时算与 rollup 用**同一套 SQL 表达式**，只是数据源不同
+// （今日从 events 明细实时 GROUP BY，历史从 daily_rollup 读已聚合值），
+// 所以同一天的两条路径结果一致（判据 10「看板 vs 手写 SQL」）。
+const LIVE_SQL: string[] = [
+  `SELECT 'dau' AS metric, '' AS dim, COUNT(DISTINCT device_id) AS value
+     FROM events WHERE name='app_opened' AND ts >= ?1`,
+  `SELECT 'new_users' AS metric, '' AS dim, COUNT(*) AS value
+     FROM first_seen WHERE first_ts >= ?1`,
+  `SELECT 'events' AS metric, '' AS dim, COUNT(*) AS value
+     FROM events WHERE ts >= ?1`,
+  `SELECT name AS metric, '' AS dim, COUNT(*) AS value
+     FROM events WHERE name LIKE 'feature_%' AND ts >= ?1 GROUP BY name`,
+  `SELECT 'err' AS metric, name AS dim, COUNT(*) AS value
+     FROM events WHERE name LIKE 'err_%' AND ts >= ?1 GROUP BY name`,
+  `SELECT 'version' AS metric, app_version AS dim, COUNT(DISTINCT device_id) AS value
+     FROM events WHERE ts >= ?1 GROUP BY app_version`,
+];
+
 async function handleDashboard(url: URL, env: Env) {
   if (url.searchParams.get("token") !== env.DASHBOARD_TOKEN) {
     return new Response("unauthorized", { status: 401 });
   }
+  const today = new Date().toISOString().slice(0, 10);
+
+  // 1) 今日：实时从明细算（UTC 自然日起点）
+  const dayStart = Math.floor(new Date(today + "T00:00:00Z").getTime() / 1000);
+  const liveRows: Array<{ day: string; metric: string; dim: string; value: number }> = [];
+  for (const sql of LIVE_SQL) {
+    const r = await env.DB.prepare(sql).bind(dayStart).all<{
+      metric: string; dim: string; value: number;
+    }>();
+    for (const row of r.results ?? []) {
+      liveRows.push({ day: today, metric: row.metric, dim: row.dim, value: row.value });
+    }
+  }
+
+  // 2) 历史：读 daily_rollup（排除今天，避免与实时值重复）
   const rows = await env.DB.prepare(
     `SELECT day, metric, dim, value FROM daily_rollup
-      WHERE day >= date('now','-7 days')
+      WHERE day >= date('now','-7 days') AND day < ?1
       ORDER BY day DESC, metric, dim`,
-  ).all<{ day: string; metric: string; dim: string; value: number }>();
+  ).bind(today).all<{ day: string; metric: string; dim: string; value: number }>();
 
-  // 今天 + 昨天的闸门用量走实时表（gate），不走 rollup：
-  // rollup 由每日 cron 生成，闸门触发/丢弃要在**分钟级**可见，不能等 cron。
-  const today = new Date().toISOString().slice(0, 10);
+  // 3) 闸门用量：走实时表（gate），不依赖 cron
   const live = await env.DB.prepare(
     `SELECT day, req_count, evt_count, dropped, paused FROM gate
       WHERE day >= date('now','-1 days') ORDER BY day DESC`,
   ).all<{ day: string; req_count: number; evt_count: number; dropped: number; paused: number }>();
 
-  const liveRows: Array<{ day: string; metric: string; dim: string; value: number }> = [];
+  const gateRows: Array<{ day: string; metric: string; dim: string; value: number }> = [];
   for (const g of live.results ?? []) {
-    liveRows.push(
+    gateRows.push(
       { day: g.day, metric: "gate_req", dim: "", value: g.req_count },
       { day: g.day, metric: "gate_evt", dim: "", value: g.evt_count },
       { day: g.day, metric: "gate_dropped", dim: "", value: g.dropped },
@@ -251,7 +285,7 @@ async function handleDashboard(url: URL, env: Env) {
     );
   }
 
-  const merged = [...(rows.results ?? []), ...liveRows].sort(
+  const merged = [...liveRows, ...(rows.results ?? []), ...gateRows].sort(
     (a, b) => (a.day === b.day ? a.metric.localeCompare(b.metric) : b.day.localeCompare(a.day)),
   );
 
@@ -264,7 +298,12 @@ async function handleDashboard(url: URL, env: Env) {
 td,th{border:1px solid #ddd;padding:4px 8px;font-size:14px}</style>
 <h1>遥测看板（UTC 自然日）</h1>
 <table><tr><th>日</th><th>指标</th><th>维度</th><th>值</th></tr>${body}</table>
-<p style="color:#666;font-size:13px">gate_* 为实时闸门计数（gate_dropped = 今日因闸门丢弃数）；其余为每日聚合。</p>`;
+<p style="color:#666;font-size:13px">
+<b>今日</b>（${escapeHtml(today)}）为实时计算，与历史日口径一致；
+<b>gate_*</b> 为实时闸门计数（gate_dropped = 因闸门丢弃数，gate_paused = 存储闸门触发）；<br>
+dau = 当日去重设备数 · new_users = 当日首见设备数 · events = 当日事件总数 ·
+feature_* = 各功能事件数 · err = 各错误事件数 · version = 各版本去重设备数。
+</p>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
