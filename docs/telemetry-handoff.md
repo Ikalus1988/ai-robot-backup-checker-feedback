@@ -235,7 +235,13 @@ npx wrangler deploy                                  # → https://telemetry-rec
 
 ---
 
-## 8. 联系与决策口径
+## 8. 文档落位
+
+- 本文件与计划书在**内网 GitLab 分支 `docs/telemetry-handoff`**（原文，含仓地址）
+  与**公开仓 `Ikalus1988/ai-robot-backup-checker-feedback` 的 `docs/`**（内网域名已泛化）
+- 实施方 clone 内网仓的地址请向发起方索取（公开仓不留内网域名）
+
+## 9. 联系与决策口径
 
 - 默认开关口径已定：**默认开 + 界面可关 + 明示**（勿改）
 - `website_id` = `robot-checker`；endpoint 部署后由实施方填入软件常量
