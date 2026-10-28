@@ -5,6 +5,8 @@
 > **v2 决策（2026-10-28）：接收端挂靠 misakanet.org**，形态 = **同账号 + 独立子域 `telemetry.misakanet.org`（custom domain）+ 独立 Worker + 独立 D1 库 + 自限流降级**。
 > **v3 变更（2026-10-28）：账号已升级 Workers Paid（$5/月档）** → 容量与成本模型整节重写：免费档的"日配额争用"消失，**风险从"配额打穿主服务"转为"无上限的账单暴露"**；自限流从"生存预算"升级为"**成本闸门**"，且必须加显式 `limits.cpu_ms`。
 > 实施由**另一台电脑的 agent** 按 `docs/telemetry-handoff.md` 完成。
+> ⚠️ **取本文档请用 `git clone` 或 `gh api repos/.../contents/docs/telemetry-launch-plan.md`，不要用 `raw.githubusercontent.com`** —— 2026-10-28 实测：本次推送后 raw 仍返回旧版（其 CDN 缓存未刷新），照旧版实现会沿用已作废的免费档假设（30 天保留期、3,000–5,000 台设备上限、缺 `limits.cpu_ms` 刹车）。
+> ⚠️ **交接书 `docs/telemetry-handoff.md` 尚未同步本计划书的变更**（同步清单见附录 F，共 8 处）——**在同步完成前不要开始实施**，否则会拿到两份互相矛盾的契约。
 > 配套调研《2026-10-28-misakanet挂靠可行性与风险.md》**仅本地留存、未入本仓**；本计划书已内联其全部结论与数字，无需另找。
 >
 > **版本改动速览（评审必读）**
