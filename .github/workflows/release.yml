@@ -1,17 +1,30 @@
-# 用法：Actions → "Publish release assets" → Run workflow → 填 tag（如 v6.21.1）
+# 用法：Actions → "Publish release assets" → Run workflow → 填 tag（如 v6.23.0）
 #
 # 为什么让 Actions 来做：上传用的 PAT 放在 GitHub Environment Secret 里，
 # 只有 workflow 能读（这是 GitHub 的安全边界，本地进程拿不到）。
 # 于是流程是「产物提交进仓 → Actions 用 secrets.AI 建 Release」，PAT 不落地到任何开发机。
 #
 # ⚠️ 权限要求（PAT 需具备）：Releases: Read & write + Contents: Read & write
+#
+# ── 2026-10-28 修复（静默失败）────────────────────────────────────────
+# 原实现只有一个 checkout（无 ref），永远取默认分支 main 的内容，与 inputs.tag 无关。
+# 而仓内 assets/latest.json 当时仍指向 v6.21.1（线上最新已是 v6.22.2），
+# 于是「照 PUSH_INSTRUCTIONS 走一遍」会把 6.21.1 的包当 v6.23.0 发布，
+# 且 latest.json 也指向旧版 → 自动更新链路静默停在旧版本，**全程零报错**。
+#
+# 现在有三道闸：
+#   ① preflight —— 发布的产物必须与 tag 同版本（latest.json / 文件名 / .sig / ASCII 名）
+#      不一致就 fail，不允许发布"张冠李戴"的包；
+#   ② publish  —— 发布动作本身（逻辑未变）；
+#   ③ postflight —— 发布后匿名下载校验：清单版本 == tag、zip 存在且非空。
+#      校验不过就把 Release 删掉（不让错包留在 latest 上）。
 name: Publish release assets
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag（如 v6.21.1）'
+        description: 'Release tag（如 v6.23.0）'
         required: true
       notes:
         description: 'Release 说明（留空则用 tag）'
@@ -27,13 +40,15 @@ jobs:
     # ⚠️ 下面这个名字要与你建的 GitHub Environment **同名**（secret AI 挂在它下面）
     environment: hp
     steps:
+      # 显式指定分支：默认为仓库默认分支（原写法隐式依赖默认行为，容易被误改）
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
-      - name: Create release and upload assets
+      # ── ① 发布前闸：产物与 tag 必须同版本 ────────────────────────
+      - name: Preflight — 校验产物与 tag 一致
         env:
-          GH_TOKEN: ${{ secrets.AI }}
           TAG: ${{ inputs.tag }}
-          NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -43,8 +58,60 @@ jobs:
             exit 1
           fi
 
-          echo "待发布 ${#files[@]} 个文件:"
+          # 期望版本：tag 去掉前缀 v
+          want="${TAG#v}"
+
+          echo "待发布 ${#files[@]} 个文件（期望版本 ${want}）:"
           printf '  %s\n' "${files[@]}"
+
+          # ①a 资产名必须 ASCII（内网前置代理对中文 multipart 文件名直接 400）
+          for f in "${files[@]}"; do
+            base="$(basename "$f")"
+            if ! printf '%s' "$base" | LC_ALL=C grep -qP '^[\x20-\x7E]+$'; then
+              echo "::error::资产名含非 ASCII 字符：${base}（会触发内网代理 400）"
+              exit 1
+            fi
+          done
+
+          # ①b latest.json 的 version 必须等于 tag
+          if [ ! -f assets/latest.json ]; then
+            echo "::error::缺 assets/latest.json —— 自动更新清单没有就不能发版"
+            exit 1
+          fi
+          got="$(python3 -c "import json,sys;print(json.load(open('assets/latest.json')).get('version',''))")"
+          if [ "$got" != "v${want}" ]; then
+            echo "::error::assets/latest.json 的 version=${got}，与 tag=${TAG} 不一致"
+            echo "::error::这正是旧版静默发旧包的成因：先把本次产物（含 latest.json）提交进 ${GITHUB_REF_NAME:-main}，再跑本 workflow"
+            exit 1
+          fi
+
+          # ①c 更新包文件名必须含版本号，且 .sig 必须存在
+          zip="assets/robot-backup-checker_${want}_x64-setup.nsis.zip"
+          sig="${zip}.sig"
+          [ -f "$zip" ] || { echo "::error::缺更新包 ${zip}"; exit 1; }
+          [ -f "$sig" ] || { echo "::error::缺签名 ${sig}（自动更新会验签失败）"; exit 1; }
+
+          # ①d 有 minisign 就真验签（没有就只做存在性检查，不阻塞）
+          if command -v minisign >/dev/null 2>&1; then
+            minisign -V "$zip" -p "${MINISIGN_PUBKEY:-}" -x "$sig" || {
+              echo "::error::minisign 验签失败：${zip}"; exit 1; }
+            echo "✓ 验签通过"
+          else
+            echo "::warning::runner 上没有 minisign，跳过验签（只校验 .sig 存在）"
+          fi
+
+          echo "✓ Preflight 通过：产物与 ${TAG} 同版本"
+
+      # ── ② 发布 ───────────────────────────────────────────────────
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.AI }}
+          TAG: ${{ inputs.tag }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(assets/*)
 
           # 同名资产先删再传，避免重复运行时报 'already_exists'
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -59,3 +126,46 @@ jobs:
 
           echo "✓ Release $TAG 已创建"
           gh release view "$TAG"
+
+      # ── ③ 发布后闸：匿名下载校验，不合格就把 Release 撤掉 ─────────
+      - name: Postflight — 匿名下载校验
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
+          want="${TAG#v}"
+          ok=1
+
+          # ③a 清单可匿名下载且版本正确
+          if ! curl -fsSL -m 60 "$base/latest.json" -o /tmp/latest.json; then
+            echo "::error::匿名下载 latest.json 失败"
+            ok=0
+          else
+            got="$(python3 -c "import json;print(json.load(open('/tmp/latest.json')).get('version',''))")"
+            if [ "$got" != "v${want}" ]; then
+              echo "::error::线上 latest.json version=${got}，期望 v${want}"
+              ok=0
+            else
+              echo "✓ 线上清单版本 ${got}"
+            fi
+          fi
+
+          # ③b 更新包可匿名下载且非空
+          url="$base/robot-backup-checker_${want}_x64-setup.nsis.zip"
+          code="$(curl -sSL -m 120 -o /tmp/pkg.zip -w '%{http_code}' "$url" || true)"
+          size="$(stat -c%s /tmp/pkg.zip 2>/dev/null || echo 0)"
+          if [ "$code" != "200" ] || [ "$size" -lt 100000 ]; then
+            echo "::error::更新包匿名下载异常：http=${code} size=${size}"
+            ok=0
+          else
+            echo "✓ 更新包可下载：http=${code} size=${size}"
+          fi
+
+          if [ "$ok" != "1" ]; then
+            echo "::error::发布后校验未通过，撤销该 Release（不让错包留在 latest 上）"
+            GH_TOKEN="${{ secrets.AI }}" gh release delete "$TAG" --yes || true
+            exit 1
+          fi
+
+          echo "✓ 发布完成并通过匿名下载校验"
