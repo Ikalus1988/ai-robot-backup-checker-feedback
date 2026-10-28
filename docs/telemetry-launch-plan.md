@@ -4,6 +4,8 @@
 > 决策：用户范围**全球** → 接收端必须公网可达 → **C 方案（Cloudflare Workers 自建接收器）**
 > **v2 决策（2026-10-28）：接收端挂靠 misakanet.org**，形态 = **同账号 + 独立子域 `telemetry.misakanet.org`（custom domain）+ 独立 Worker + 独立 D1 库 + 自限流降级**。
 > **v3 变更（2026-10-28）：账号已升级 Workers Paid（$5/月档）** → 容量与成本模型整节重写：免费档的"日配额争用"消失，**风险从"配额打穿主服务"转为"无上限的账单暴露"**；自限流从"生存预算"升级为"**成本闸门**"，且必须加显式 `limits.cpu_ms`。
+> **v3.1 · 2026-10-28**（同日补充：交叉运行边界）
+> **v3.1 新增**：§5.9「与 MisakaNet 的交叉运行边界」——把"能隔离的"与"隔离不了的"分开；**新发现 zone 级安全规则（Bot Fight Mode / WAF / IP 限流）会连坐子域**，客户端 UA `robot-backup-checker-telemetry` 极易被判为机器人 → 被拦返 4xx → 按契约丢弃 → **遥测静默零数据**。新增验收判据 14（真实 UA 实测）与部署纪律一条。
 > 实施由**另一台电脑的 agent** 按 `docs/telemetry-handoff.md` 完成。
 > ⚠️ **取本文档请用 `git clone` 或 `gh api repos/.../contents/docs/telemetry-launch-plan.md`，不要用 `raw.githubusercontent.com`** —— 2026-10-28 实测：本次推送后 raw 仍返回旧版（其 CDN 缓存未刷新），照旧版实现会沿用已作废的免费档假设（30 天保留期、3,000–5,000 台设备上限、缺 `limits.cpu_ms` 刹车）。
 > ⚠️ **交接书 `docs/telemetry-handoff.md` 尚未同步本计划书的变更**（同步清单见附录 F，共 8 处）——**在同步完成前不要开始实施**，否则会拿到两份互相矛盾的契约。
@@ -14,6 +16,7 @@
 > |---|---|
 > | v2 | 挂靠形态定案（子域 custom domain）；**修正 v1 的容量估算错误**——CF 免费配额是账号级而非单服务可用；新增配额切片、204 降级、幂等键、客户端时间戳；§5 整章重写 |
 > | **v3** | **套餐升级为 Workers Paid** → §5.3 从"配额切片生存预算"改为"**容量与成本模型**"；保留期 30 天 → **90 天明细 + 聚合长期**（存储不再受限）；**新增 `limits.cpu_ms` 硬刹车**；新增成本闸门与账单告警；H1/H2/H3 的定性全部改写 |
+| **v3.1** | 新增 §5.9 交叉运行边界；**新发现 zone 级 Bot/WAF 规则连坐子域**（真实 UA 被拦 → 4xx → 静默丢数据）；新增验收判据 14 |
 
 ---
 
@@ -349,6 +352,8 @@ npx wrangler deploy
 
 **部署纪律**：
 - 部署后**必须 curl 验证三个地址**：`/api/send`（合法→200 / 非法→400）、`/dashboard?token=`（200）、`/healthz`（200 且闸门用量可见）；
+- **必须用真实客户端 UA 测一次**（`User-Agent: robot-backup-checker-telemetry` + 真实报文）→ 期望 200，**不能是 403/503**：
+  zone 级的 WAF / Rate Limiting / **Bot Fight Mode** 规则会**连坐子域**，而本客户端的 UA 极易被判为机器人；一旦被拦返回 4xx，按契约即"毒报文丢弃" → **遥测静默零数据且看板无报错**（详见 §5.9）；
 - **不验证不算部署完成**（对应交接书坑 2「构建成功 ≠ 产物含新代码」）；
 - 禁止把 Worker 代码推进 `ai-robot-backup-checker-feedback`（公开仓，其 README 明写"只放发布产物"）。
 
@@ -377,6 +382,31 @@ npx wrangler deploy
 | 主服务流量突增 | 账号级用量上升 | — | 遥测闸门独立计数且**遥测先让**；账单按 worker 分开看 |
 | Worker 部署出错 / 崩溃 | 端点 5xx | 客户端入队 | 客户端队列兜底；服务端 `wrangler versions deploy` 回滚上一版 |
 | 套餐降级回 Free | 单库 500MB / 库数 10 / 日请求 10 万 | — | 保留期策略可一键切到 30 天（附录 D） |
+
+### 5.9 与 MisakaNet 的交叉运行边界（v3.1 新增）
+
+挂靠同一个账号、同一个域名 zone，**必然共享三类东西**。本节把"能隔离的"和"隔离不了的"分开写清楚，避免实施时误以为"上了子域就万事大吉"。
+
+**能隔离（靠选型，已在本方案内）**：Worker 代码与部署流水线、D1 库、cron、路由与路径匹配、DNS/证书、domain 级日志。
+
+**隔离不了（必须靠闸门与自律）**：
+
+| 共享物 | 风险 | 对策 |
+|---|---|---|
+| **Zone 级安全规则**（WAF / Rate Limiting / **Bot Fight Mode** / 缓存 / Origin Rules） | ⚠️ **连坐子域**。客户端 UA `robot-backup-checker-telemetry` 极易被判为机器人 → 被 challenge/拦返回 4xx → 按契约"毒报文丢弃" → **遥测静默零数据，看板空白也无报错**；zone 级按 IP 的限流还会误伤同出口 IP 的工业用户 | ① 上线前用**真实 UA + 真实报文**测一次（§5.6 部署纪律、§9 判据 14）② 为该子域建"跳过 Bot 挑战"的 WAF 例外 ③ 必要时改 UA（要进 6.23.0） |
+| **账号级账单**（Workers / D1 / Logs / KV） | 遥测成本计入主服务账单；主服务流量尖峰也会影响账号级判断 | 成本闸门（§5.3/§5.7）+ 按 worker 分账 + 账单告警（附录 E） |
+| **账号级处置**（滥用审查 / 令牌泄漏 / 欠费） | 两者同命；MisakaNet 是有外部贡献者 PR 的公开项目，停服代价远高于遥测 | 迁移路径（附录 D）；遥测不可用**不影响主业务功能** |
+| **D1 账号级读写额度** | 遥测的写行（事件 + 索引 + 清理删除）消耗账号 50M/月 包含额度 | 索引做减法；保留期与闸门联合控制 |
+
+**代码层面：绝不进 MisakaNet 仓**。若把遥测代码放进 MisakaNet 仓，会连带 7 处交叉（`apply-d1-schema.yml` 跨库污染 schema、`d1-backup.yml` 把遥测明细纳入主服务备份、`cf-diagnostics.yml` 把遥测错误算进主服务故障噪音、`deploy-freshness.yml` 混淆 COMMIT_SHA 健康语义、`test_worker_compat_dates.py` 需登记、GitHub Environment `hp` 的 PAT 权限共用与审批排队、该仓"PR 列表给贡献者看 / 交接件不入仓"的规矩被破坏）。
+
+**因此**：
+- 遥测代码 → **内网 GitLab 新建 `telemetry-receiver` 仓**，独立 CI，**独立 GitHub Environment + 独立 PAT**；
+- **不并进 `misakanet-register-proxy` worker**；
+- **不复用 MisakaNet 的 D1 库，尤其不复用 `MISAKANET_KV`**（它存着主服务的节点注册与限流计数，复用即等于把一个产品的数据落进另一个产品的存储边界）；
+- 只在 MisakaNet 仓做**两处登记**：① worker 清单 / `test_worker_compat_dates.py` 里登记 `rbc-telemetry` 及其 compat_date；② 文档加一行"账号内另有一个独立 Worker（遥测接收端），与本仓无代码耦合，仅共享 CF 账号与域名"。
+
+**上线后 24 小时内的 6 项检查**：① 真实客户端 UA 打 `/api/send` 非 403；② 遥测 worker 请求数 ≈ 装机量 × 2/天；③ `daily_rollup` 的 dau 随天推进；④ `gate.dropped` 为 0；⑤ 遥测的请求与写行在阈值内、账单符合预期；⑤ 主服务错误率与 D1 用量与上线前基线一致。
 
 ---
 
@@ -465,6 +495,7 @@ npx wrangler deploy
 | 11 | 留存可算 | rollup 里留存卡片有数 | 按 cohort 定义可复现（附录 C） |
 | 12 | 全球可达 | 2–3 地探测点，**含中国大陆至少 1 个** | 均 200（自定义域在大陆链路不稳，需实测） |
 | 13 | 主服务无影响 | 遥测满负荷跑 24h 后 | MisakaNet 主站请求成功率与 D1 用量**无异常上升**；账单增量符合预期 |
+| 14 | **真实客户端 UA 可达** | 用 `User-Agent: robot-backup-checker-telemetry` + 真实报文打一次 | **200**，不是 403/503（验 zone 级 Bot/WAF 未连坐子域，§5.9） |
 
 ---
 
@@ -473,6 +504,7 @@ npx wrangler deploy
 | 风险 | 对策 |
 |---|---|
 | **账单跑飞**（客户端 bug / 刷量，付费档无日顶） | device_id 限流 + 每日闸门 → 204 + `limits.cpu_ms` + 账单告警（§5.3/5.7） |
+| **zone 级安全规则连坐子域**（Bot Fight Mode / WAF / IP 限流） | 上线前用真实 UA 实测；为子域建 Bot 挑战例外；必要时改 UA（§5.9） |
 | **滥用审查牵连 misakanet.org** | 独立子域 + 端点公开透明 + 明确 opt-out + 提供停用联系人；不混用主域路径（§7.1） |
 | **隐私质疑（未披露 / 数据关联）** | 隐私政策增补 + 独立 D1 库 + 禁止跨库关联 + 采集项最小化（§7.1） |
 | **看板读放大**（延迟 + 读成本 + CPU + 给主服务制造噪声） | 看板只读 `daily_rollup`；明细仅导出（§5.4） |
@@ -569,9 +601,9 @@ SELECT metric, dim, value FROM daily_rollup WHERE day = date('now');
 | §2.1 上报 HTTP 契约 | 报文加 `timestamp` / `event_id`；**新增 204 语义**（服务端主动丢弃）；5xx 语义不变 |
 | §2.2 事件字典 | tag 值域枚举（perf_batch / update_result / check_hit）；白名单用显式常量 |
 | §2.3 客户端配置契约 | **新增 `device_id` 字段**；`enabled` vs `usage_enabled` 语义定案；endpoint 默认值改为 `https://telemetry.misakanet.org/api/send` |
-| §3 工作项 A | 端点主机名改子域；schema 加 `daily_rollup`/`event_id`/`recv_ts`、索引做减法；**新增 §5.3 容量与成本模型 + 每日闸门 + `limits.cpu_ms`**；新增 Cron（清理+聚合）；部署步骤含 custom domain + zone 审计登记 |
+| §3 工作项 A | 端点主机名改子域；schema 加 `daily_rollup`/`event_id`/`recv_ts`/`gate`、索引做减法；**新增 §5.3 容量与成本模型 + 成本闸门（204）+ `limits.cpu_ms`**；新增 Cron（聚合+清理）；部署步骤含 custom domain + zone 审计登记 + **zone 级 Bot/WAF 例外**；**新增 §5.9 交叉运行边界（代码不进 MisakaNet 仓、独立 Environment、不复用 MISAKANET_KV）** |
 | §4 工作项 B | B-1 bootstrap 必须写 `device_id` 且不覆盖已有；B-2 开关写 `enabled`；**新增 B-5 契约配合**（timestamp/event_id/204/退避） |
 | §5 发版速查 | 无需改；但发版链路须先修 `release.yml` 的 checkout ref（见复核报告 §7） |
 | §6 已知坑 | **新增第 8 条：发版后必须匿名下载校验产物版本**（现有 7 条坑全在构建期，发版链路是裸奔的） |
-| §7 验收判据 | 13 条（新增：幂等、闸门 204、CPU 刹车、留存可算、主服务无影响、国内探测点） |
+| §7 验收判据 | 14 条（新增：幂等、闸门 204、CPU 刹车、留存可算、主服务无影响、**真实客户端 UA 可达（zone Bot 规则）**、国内探测点） |
 | §8 联系与决策口径 | 补：挂靠形态、保留期 90 天、幂等键进 6.23.0、隐私政策增补、闸门阈值 |
