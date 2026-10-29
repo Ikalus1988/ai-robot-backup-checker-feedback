@@ -53,7 +53,7 @@ export default {
       if (req.method === "POST" && url.pathname === "/api/send") return await handleSend(req, env, ctx);
       if (req.method === "GET" && url.pathname === "/dashboard") return await handleDashboard(url, env);
       if (req.method === "GET" && url.pathname === "/healthz") return await handleHealth(env);
-      return new Response("not found", { status: 404 });
+      return notFound(url, req.method);
     } catch {
       // 5xx = 可重试：客户端入队，幂等键保证补发不重复计数
       return json(503, { error: "server_error" });
@@ -64,6 +64,29 @@ export default {
     ctx.waitUntil(rollupAndCleanup(env));
   },
 };
+
+// ── 错误提示文案 ──────────────────────────────────────────────
+// 裸 "not found" / "unauthorized" 对排障毫无帮助：
+// 运维看到 401 会以为是端点挂了，看到 404 会以为是路径写错。
+// 告诉对方「正确的地址是什么」，一分钟能省掉一轮排查。
+const ENDPOINT_HINT =
+  "遥测接收端 rbc-telemetry · telemetry.misakanet.org\n" +
+  "可用端点：\n" +
+  "  POST /api/send      上报事件（客户端用这个）\n" +
+  "  GET  /dashboard?token=<口令>   看板\n" +
+  "  GET  /healthz      存活 + 今日闸门用量";
+
+function notFound(url: URL, method: string): Response {
+  const body =
+    `404 · 路径不存在\n\n` +
+    `你请求的是：${method} ${url.pathname}\n\n` +
+    `${ENDPOINT_HINT}\n\n` +
+    `注意：/api/send 只接受 POST，用 GET 访问也会得到这个 404。`;
+  return new Response(body, {
+    status: 404,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
 
 // ── 上报主链路 ────────────────────────────────────────────────
 async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
@@ -246,7 +269,23 @@ const LIVE_SQL: string[] = [
 
 async function handleDashboard(url: URL, env: Env) {
   if (url.searchParams.get("token") !== env.DASHBOARD_TOKEN) {
-    return new Response("unauthorized", { status: 401 });
+    // 裸 "unauthorized" 会让人以为是服务挂了。
+    // 直接说清楚：缺 token / token 不对 / 正确地址长什么样。
+    const provided = url.searchParams.get("token");
+    const reason = provided === null
+      ? "缺少 token 参数"
+      : "token 不正确";
+    const body =
+      `401 · 未授权（${reason}）\n\n` +
+      `看板需要口令，正确地址形如：\n` +
+      `  /dashboard?token=<口令>\n\n` +
+      `口令由部署方通过 CF secret（DASHBOARD_TOKEN）设置，不在仓库里。\n` +
+      `若你不知道口令，请向部署方索取。\n\n` +
+      `${ENDPOINT_HINT}`;
+    return new Response(body, {
+      status: 401,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
   }
   const today = new Date().toISOString().slice(0, 10);
 

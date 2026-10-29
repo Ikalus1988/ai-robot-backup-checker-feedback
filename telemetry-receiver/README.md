@@ -3,40 +3,21 @@
 「机器人程序检查&转换工具」的匿名使用统计接收端。Cloudflare Worker + D1，部署在
 `telemetry.misakanet.org`（misakanet.org 账号下的**独立子域 custom domain**）。
 
-> **契约与口径以 `docs/telemetry-launch-plan.md` 为准**（同仓 `docs/` 目录）。
+> **契约与口径以 `docs/telemetry-launch-plan.md` v3.1 为准**（在
+> `Ikalus1988/ai-robot-backup-checker-feedback` 的 main 分支，仓名见计划书附录）。
 > 本 README 只讲"怎么跑起来"与"哪些还没做完"。
 
-## 公开版与本地版的差异
+## ⚠️ 这个仓现在只是本地仓
 
-本目录是**公开版**：
-
-| 项 | 公开版（本仓） | 本地版 |
-|---|---|---|
-| `wrangler.toml` | CF 账号 ID / D1 库 ID 抽走为占位符 | 真实值 |
-| `DASHBOARD_TOKEN` | 不入库（`wrangler secret put`） | 同 |
-| 源码 `src/`、`schema.sql` | 与线上运行版本一致 | 同 |
-
-**部署前**复制模板填入真实值：
-
-```bash
-cp wrangler.toml.example wrangler.local.toml
-# 填入 account_id / database_id
-npx wrangler deploy --config wrangler.local.toml
-```
-
-`wrangler.local.toml` 不入仓（见 `.gitignore`）。
-
-## 与其它仓的边界
-
-- 本仓**不含**客户端源码（那在内网 GitLab）。
-- **不进 MisakaNet 仓**：会连带 schema 应用/备份/诊断/部署新鲜度等 7 处交叉，见计划书 §5.9。
+- **代码不推进 `ai-robot-backup-checker-feedback`**（公开仓，其 README 明写"只放发布产物，不含源码"）。
+- **代码不推进 MisakaNet 仓**（会连带 schema 应用/备份/诊断/部署新鲜度等 7 处交叉，见计划书 §5.9）。
+- 内网 GitLab 到位后整体迁过去（纯 git 操作，无需改代码）。
 
 ## 文件
 
 | 文件 | 作用 |
 |---|---|
-| `wrangler.toml` | 部署配置（公开版，资源标识符已抽走） |
-| `wrangler.toml.example` | 部署用真实配置模板 |
+| `wrangler.toml` | 部署配置：`cpu_ms` 刹车、每日 cron、D1 绑定、**每日成本闸门阈值** |
 | `schema.sql` | 4 张表：`events` / `first_seen` / `daily_rollup` / `gate` |
 | `src/index.ts` | 唯一入口：3 个端点 + 1 个 cron，零依赖（无框架、无 zod） |
 
@@ -44,11 +25,14 @@ npx wrangler deploy --config wrangler.local.toml
 
 ```
 POST /api/send                 200 收妥 | 204 闸门主动丢弃 | 400 毒报文 | 429 限流 | 503 故障
-GET  /dashboard?token=         看板（daily_rollup + gate 表实时行）
+GET  /dashboard?token=         看板（今日实时算 + 历史读 daily_rollup + gate 实时行）
 GET  /healthz                  存活 + 今日闸门用量（req/evt/dropped/paused/over_budget）
 ```
 
 `GET /api/export`（CSV）属于**第二阶段**，当前未实现。
+
+**401 / 404 都带提示文案**（不是裸字符串）：会直接说明「正确地址是什么」、
+「是缺 token 还是 token 不对」，省掉一轮排障。
 
 ### `/healthz` 字段
 
@@ -69,7 +53,7 @@ wrangler login                          # 交互式，需在浏览器确认
 
 # 1) 建 D1 并回填 database_id
 wrangler d1 create telemetry-db
-#    → 把返回的 database_id 填进 wrangler.local.toml
+#    → 把返回的 database_id 填进 wrangler.toml
 
 # 2) 建表
 wrangler d1 execute telemetry-db --file schema.sql --remote   # ⚠️ 必须加 --remote
@@ -77,8 +61,8 @@ wrangler d1 execute telemetry-db --file schema.sql --remote   # ⚠️ 必须加
 # 3) 设置看板口令（不进 vars）
 wrangler secret put DASHBOARD_TOKEN
 
-# 4) 部署（用填好真实值的本地配置）
-npx wrangler deploy --config wrangler.local.toml
+# 4) 部署
+npx wrangler deploy
 
 # 5) 挂自定义域（Dashboard → rbc-telemetry → Settings → Domains & Routes
 #    → Add Custom Domain → telemetry.misakanet.org）
@@ -104,7 +88,7 @@ npx wrangler deploy --config wrangler.local.toml
 - [ ] 看板卡片细分（当前是通用表格，可按 metric/dim 渲染成卡片）
 - [ ] 单测（当前靠 curl 验收；计划书 §9 的 15 条判据）
 - [ ] zone 级 Bot/WAF 例外配置（若第 2 条检测到 403）
-- [ ] 独立 CI/Environment（与 MisakaNet 分开的部署流水线与凭据）
+- [ ] 内网 GitLab 仓库 + 独立 CI/Environment
 
 ## 五个容易踩的点
 
