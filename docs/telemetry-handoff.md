@@ -280,6 +280,14 @@ npx wrangler deploy                                  # → https://telemetry-rec
 5. 断网期间操作 → 恢复后队列冲出、数据齐全
 6. 关闭「使用统计」→ D1 零新增
 7. 看板数字与 SQL 手查一致（今日新增 / 7日DAU）
+   > ⚠️ **各指标去重口径不同，别当成互相矛盾**（2026-10-29 复验实测）：
+   > `dau` = `COUNT(DISTINCT device_id) WHERE name='app_opened'`（**只**算发过 app_opened 的设备）；
+   > `version` 维度 = `COUNT(DISTINCT device_id)`（**所有事件**的设备）；
+   > `new_users` = `COUNT(*) FROM first_seen`（只由 app_installed 建立）；
+   > `events` = 按 `event_id` 去重的事件数。
+   > → **`version` 的值可以大于 `dau`**（设备发了功能事件但没发 app_opened）。
+   > 另：`gate.req_count`（受理的 HTTP 请求数，含幂等重放）与 `events`（去重事件数）
+   > 是**不同口径**，数值不可直接相减比较。
 8. 不同地区探测点 curl 均 200
 9. **超时语义（v1.2 新增）**：把端点指向一个**会超时但仍会入库**的地址
    （或临时断网/掐断链路）→ 客户端应**入队重发**（不得当 4xx 丢弃），

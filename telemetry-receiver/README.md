@@ -44,6 +44,19 @@ GET  /healthz                  存活 + 今日闸门用量（req/evt/dropped/pau
 | `over_budget` | 今日是否已触顶（`true` 时后续请求一律 204） |
 | `pending_dropped` | 本 isolate 尚未落库的丢弃数（节流窗口内） |
 
+### 看板指标的**去重口径各不相同**（别当成互相矛盾）
+
+| 指标 | 去重口径 | 说明 |
+|---|---|---|
+| `dau` | `COUNT(DISTINCT device_id) WHERE name='app_opened'` | **只**统计发过 `app_opened` 的设备 |
+| `new_users` | `COUNT(*) FROM first_seen` | 只由 `app_installed` 建立，一条设备一行 |
+| `events` | `COUNT(*)` 去重事件数 | 按 `event_id` 去重（幂等键） |
+| `version` 维度 | `COUNT(DISTINCT device_id)` **所有事件** | 发过**任意**事件的设备数 |
+
+> ⚠️ **`version` 的值可以大于 `dau`** —— 一台设备发了 `feature_batch` 但没发 `app_opened`
+> → 计入 `version`、不计入 `dau`。这不是矛盾，是两个指标定义不同。
+> （实测同一批数据：version 157 / dau 136。）
+
 ## 部署步骤
 
 ```bash

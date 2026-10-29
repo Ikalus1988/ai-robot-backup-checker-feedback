@@ -339,9 +339,10 @@ td,th{border:1px solid #ddd;padding:4px 8px;font-size:14px}</style>
 <table><tr><th>日</th><th>指标</th><th>维度</th><th>值</th></tr>${body}</table>
 <p style="color:#666;font-size:13px">
 <b>今日</b>（${escapeHtml(today)}）为实时计算，与历史日口径一致；
-<b>gate_*</b> 为实时闸门计数（gate_dropped = 因闸门丢弃数，gate_paused = 存储闸门触发）；<br>
-dau = 当日去重设备数 · new_users = 当日首见设备数 · events = 当日事件总数 ·
-feature_* = 各功能事件数 · err = 各错误事件数 · version = 各版本去重设备数。
+<b>gate_*</b> 为实时闸门计数（gate_dropped = 因闸门丢弃数，gate_paused = 存储闸门触发）。<br>
+dau = 发过 app_opened 的去重设备数 · new_users = 首见设备数 · events = 去重事件总数 ·
+feature_* = 各功能事件数 · err = 各错误事件数 ·
+version = 各版本<b>发过任意事件</b>的去重设备数（可大于 dau：只发功能事件未发 app_opened 的设备计入 version 不计入 dau）。
 </p>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
