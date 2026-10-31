@@ -8,12 +8,15 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "check": "tsc --noEmit",
-    "db:init": "wrangler d1 execute telemetry-db --file schema.sql",
-    "db:query": "wrangler d1 execute telemetry-db --command",
+    "db:init:local": "wrangler d1 execute telemetry-db --local --file schema.sql",
+    "db:init:remote": "wrangler d1 execute telemetry-db --remote --file schema.sql",
+    "db:query:local": "wrangler d1 execute telemetry-db --local --command",
+    "db:query:remote": "wrangler d1 execute telemetry-db --remote --command",
     "tail": "wrangler tail"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250429.0",
-    "typescript": "^5.8.0"
+    "@cloudflare/workers-types": "4.20260702.1",
+    "typescript": "^5.8.0",
+    "wrangler": "4.112.0"
   }
 }

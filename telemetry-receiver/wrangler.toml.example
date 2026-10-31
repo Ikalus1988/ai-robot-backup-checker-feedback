@@ -10,7 +10,7 @@
 name = "rbc-telemetry"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
-compatibility_flags = ["nodejs_compat"]
+# 曾启用 compatibility_flags = ["nodejs_compat"]，现已移除（本 Worker 零依赖、零 Node API）。
 
 # CF 账号 ID（Dashboard → Workers & Pages → 右侧 Account ID）
 account_id = "REPLACE_WITH_YOUR_CF_ACCOUNT_ID"
@@ -20,7 +20,8 @@ routes = [
 ]
 
 [limits]
-cpu_ms = 50_000
+# 原值 50_000 高于付费档默认的 30 秒，与「压低跑飞账单」的意图相反；现取 10 秒。
+cpu_ms = 10_000
 
 [triggers]
 crons = ["23 4 * * *"]
@@ -35,10 +36,15 @@ database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 WEBSITE_ID = "robot-checker"
 GATE_REQ_DAY = "100000"
 GATE_EVT_DAY = "100000"
-GATE_STORE_MAX_MB = "4096"
+# 存储闸门阈值：清理后仍超期未清的行数。取代旧的 GATE_STORE_MAX_MB（那是从未生效的死旋钮）。
+GATE_RETENTION_BACKLOG_ROWS = "1000"
+# 单 isolate 令牌桶限流（per-isolate，非全局精确）
+RATE_LIMIT_PER_MIN = "120"
 RETENTION_DAYS = "90"
 
 [observability]
 enabled = true
 
 # DASHBOARD_TOKEN 走 secret：wrangler secret put DASHBOARD_TOKEN
+# INGEST_KEY 走 secret：wrangler secret put INGEST_KEY
+#   上报端必须带 X-Ingest-Key 头；未配置时服务端 fail closed（返 500，不放行）。

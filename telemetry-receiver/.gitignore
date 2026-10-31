@@ -2,9 +2,19 @@ node_modules/
 .wrangler/
 .dev.vars
 .dev.vars.*
+# 例外：模板要进版本库（.dev.vars.* 会把 example 一起吃掉）
+!.dev.vars.example
 *.log
 .DS_Store
 
 # 含真实 CF 账号 ID / D1 库 ID 的本地部署配置，不入仓
 wrangler.local.toml
 wrangler.toml.local
+
+# D1 / SQLite 本地产物（miniflare 落地文件、导出文件等）
+*.sqlite
+*.sqlite-*
+*.db
+*.db-journal
+dumps/
+*.csv

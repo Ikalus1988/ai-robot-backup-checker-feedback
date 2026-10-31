@@ -1,0 +1,15 @@
+# 本地开发用的 secrets 模板 —— 复制成 .dev.vars 后填值（.dev.vars 已被 git 忽略）
+#
+#   cp .dev.vars.example .dev.vars
+#
+# ⚠️ 这里只放占位空值，**永远不要把真实密钥提交进仓库**。
+#    .dev.vars 只影响本地 `wrangler dev`；线上用 `wrangler secret put <NAME>`。
+
+# 上报端共享密钥：客户端每次 POST /api/send 必须带 `X-Ingest-Key: <这个值>` 头。
+# 用途：防止伪造事件烧 D1 写额度、并防止伪造流量把存储闸门顶开导致真实遥测被静默丢弃。
+# 未配置时服务端 **fail closed**（一律 500，不放行）。
+INGEST_KEY=
+
+# 看板口令：GET /dashboard 时用 `Authorization: Bearer <这个值>`（兼容 ?token=）。
+# 只给运维看，不要复用 INGEST_KEY —— 两个用途必须分开。
+DASHBOARD_TOKEN=

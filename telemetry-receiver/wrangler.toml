@@ -1,7 +1,10 @@
 name = "rbc-telemetry"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
-compatibility_flags = ["nodejs_compat"]
+# ⚠️ 曾启用 compatibility_flags = ["nodejs_compat"]，现已移除：
+#    本 Worker 零依赖、零 import，不使用任何 Node 内建 API（Buffer/process/crypto 等），
+#    nodejs_compat 只是白白增加冷启动开销与兼容面。
+#    若将来真要用 Node API（必须先说明是哪一个），再把它加回来并注明用途。
 
 # CF 账号 ID 见 wrangler.local.toml（不入仓）
 # ⚠️ 本文件是**公开版**：CF 账号 ID 与 D1 库 ID 均已抽走，不含真实资源标识。
@@ -17,8 +20,12 @@ routes = [
 # 跑飞账单刹车：付费档单次请求 CPU 默认 30 秒，必须显式压低。
 # CF 官方在 Workers Paid 定价页写明 limits.cpu_ms 用于
 # "prevent accidental runaway bills or denial-of-wallet attacks"。
+# ⚠️ 取值说明：原值 50_000（50 秒）**高于**付费档默认的 30 秒 —— 与上面
+#    「必须显式压低」的意图正好相反，等于把刹车松开。现取 10_000（10 秒）：
+#    本 Worker 单次请求只做 1 次 D1 读 + 1 个 batch 写，实测远低于 1 秒，
+#    10 秒已有 10 倍余量，却把「一个 bug 烧穿钱包」的最坏损失压到 1/3。
 [limits]
-cpu_ms = 50_000
+cpu_ms = 10_000
 
 # 每日一次：刷新 daily_rollup + 清理超期明细。
 [triggers]
@@ -37,7 +44,17 @@ WEBSITE_ID = "robot-checker"
 # 折合 ≈ 4 万台日活设备；告警线取闸门线的 80%（计划书附录 E）
 GATE_REQ_DAY = "100000"
 GATE_EVT_DAY = "100000"
-GATE_STORE_MAX_MB = "4096"
+
+# 存储闸门阈值：cron 清理完之后**仍超期未清的行数**超过它 → 暂停上报（返 204）。
+# ⚠️ 这取代了旧的 GATE_STORE_MAX_MB —— 那个「MB 预算」从来没有真正生效过
+#    （代码判的是二值的「有没有超期行」），是个死旋钮，留着只会误导运维。
+#    真实库大小改由 /healthz 的 store_mb 字段只读暴露。
+GATE_RETENTION_BACKLOG_ROWS = "1000"
+
+# 单 isolate 令牌桶限流：每分钟最多放行多少个上报请求（超了返 429 + Retry-After）。
+# ⚠️ per-isolate，**不是全局精确限流**：CF 会把请求分散到多个 isolate，
+#    全局成本控制仍然只靠上面的每日闸门。这个只挡「单 isolate 被瞬间打爆」。
+RATE_LIMIT_PER_MIN = "120"
 
 # 明细保留天数（90 天；删除也计写额度，稳态下删除成本 ≈ 插入成本）
 RETENTION_DAYS = "90"
@@ -46,3 +63,6 @@ RETENTION_DAYS = "90"
 enabled = true
 
 # DASHBOARD_TOKEN 不要放在这里 —— 用 `wrangler secret put DASHBOARD_TOKEN`
+# INGEST_KEY 同样用 secret（`wrangler secret put INGEST_KEY`）：
+#   上报端必须带 `X-Ingest-Key: <key>` 头，否则一律 401；
+#   INGEST_KEY 未配置时服务端 **fail closed**（返 500，不放行）。
