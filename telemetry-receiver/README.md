@@ -27,7 +27,9 @@
 
 | 文件 | 作用 |
 |---|---|
-| `wrangler.toml` | 部署配置：`cpu_ms` 刹车、每日 cron、D1 绑定、**每日成本闸门阈值**、限流阈值 |
+| `wrangler.toml` | 部署配置的**公开版**：`cpu_ms` 刹车、每日 cron、D1 绑定、**每日成本闸门阈值**、限流阈值。CF 账号 ID 与 D1 库 ID 是占位符，真实值不入库 |
+| `wrangler.toml.example` | 部署用模板：复制成 `wrangler.local.toml` 后填真实 ID 再部署 |
+| `wrangler.local.toml` | **本地私有部署配置**（不入仓，`.gitignore` 已排除）：真实 `account_id` / `database_id`。部署与本地开发都用 `--config wrangler.local.toml` |
 | `schema.sql` | 4 张表：`events` / `first_seen` / `daily_rollup` / `gate` |
 | `src/index.ts` | 唯一入口：3 个端点 + 1 个 cron，零依赖（无框架、无 zod） |
 | `.dev.vars.example` | 本地 secrets 模板（复制成 `.dev.vars` 后填值，`.dev.vars` 不进仓库） |
@@ -165,9 +167,12 @@ GET  /healthz       存活 + 今日闸门用量 + 限流/存储配置
 wrangler login                          # 交互式，需在浏览器确认
 # 或 export CLOUDFLARE_API_TOKEN=...     # 需含 Account Workers Scripts Edit + D1 Edit
 
-# 1) 建 D1 并回填 database_id
+# 1) 建 D1，并把真实标识写进**本地配置**（⚠️ 不是 wrangler.toml）
 wrangler d1 create telemetry-db
-#    → 把返回的 database_id 填进 wrangler.toml
+cp wrangler.toml.example wrangler.local.toml
+#    → 在 wrangler.local.toml 里填 account_id 与 database_id
+#    ⚠️ wrangler.local.toml 不入仓（见 .gitignore）；仓库里的 wrangler.toml 是
+#       **公开版**，account_id / database_id 一律是占位符，真实值永远不进版本库。
 
 # 2) 建表（⚠️ 认准 local/remote 后缀，别建错库）
 npm run db:init:remote                 # 打到生产 D1（等价 wrangler d1 execute ... --remote --file schema.sql）
@@ -177,8 +182,8 @@ npm run db:init:local                  # 只建到本地 miniflare 库（开发�
 wrangler secret put DASHBOARD_TOKEN    # 看板口令
 wrangler secret put INGEST_KEY         # 上报端共享密钥 → 客户端要用它
 
-# 4) 部署
-npx wrangler deploy
+# 4) 部署（用本地配置，仓库里的 wrangler.toml 是脱敏公开版）
+npx wrangler deploy --config wrangler.local.toml
 
 # 5) 挂自定义域（Dashboard → rbc-telemetry → Settings → Domains & Routes
 #    → Add Custom Domain → telemetry.misakanet.org）
@@ -204,10 +209,21 @@ npx wrangler deploy
 ```bash
 npm install                 # 装依赖（含 wrangler，见下）
 cp .dev.vars.example .dev.vars   # 填 INGEST_KEY / DASHBOARD_TOKEN
+cp wrangler.toml.example wrangler.local.toml  # 填 account_id / database_id（本地 D1 绑定要靠它）
 npm run db:init:local       # 建本地库
 npm run dev                 # 起本地 Worker
 npm run db:query:local -- "SELECT COUNT(*) FROM events"
 ```
+
+⚠️ **本地开发要用 `--config wrangler.local.toml`**：
+仓库里的 `wrangler.toml` 是**脱敏公开版**，`database_id` 是占位符，D1 绑定解析不了。
+本地跑请显式指定本地配置：
+
+```bash
+npx wrangler dev --local --port 8788 --compatibility-date 2026-07-21 --config wrangler.local.toml
+```
+
+（`wrangler.local.toml` 不入仓；它只在本机存在，真实 CF 标识永远不进版本库。）
 
 ⚠️ **本机 `wrangler dev` 需要显式降 compatibility_date**：
 当前 wrangler 4.112.0 自带的 workerd 最高只支持 `2026-07-21`，而 `wrangler.toml` 里是
@@ -216,7 +232,7 @@ npm run db:query:local -- "SELECT COUNT(*) FROM events"
 本地跑请用：
 
 ```bash
-npx wrangler dev --local --port 8788 --compatibility-date 2026-07-21
+npx wrangler dev --local --port 8788 --compatibility-date 2026-07-21 --config wrangler.local.toml
 ```
 
 （只影响本地开发会话，不改 `wrangler.toml`、不影响线上。workerd 追上兼容日期后可去掉该参数。）
