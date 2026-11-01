@@ -11,6 +11,9 @@ node_modules/
 wrangler.local.toml
 wrangler.toml.local
 
+# 生产 secrets（本地留存，含真实 INGEST_KEY）——不入仓
+prod-secrets.local.txt
+
 # D1 / SQLite 本地产物（miniflare 落地文件、导出文件等）
 *.sqlite
 *.sqlite-*
