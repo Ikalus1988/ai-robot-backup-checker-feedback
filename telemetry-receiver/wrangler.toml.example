@@ -33,7 +33,7 @@ database_name = "telemetry-db"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 [vars]
-WEBSITE_ID = "robot-checker"
+WEBSITE_ID = "robot-backup-checker"
 GATE_REQ_DAY = "100000"
 GATE_EVT_DAY = "100000"
 # 存储闸门阈值：清理后仍超期未清的行数。取代旧的 GATE_STORE_MAX_MB（那是从未生效的死旋钮）。

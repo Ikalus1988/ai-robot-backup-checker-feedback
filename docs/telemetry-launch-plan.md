@@ -10,6 +10,15 @@
 > 每次 `POST /api/send` 必须带头 `X-Ingest-Key`。§4 响应语义表补齐 **401 / 413 / 429 三行**，
 > 附录 A 补 `ingest_key` 字段，并写死**上线顺序：先发客户端 → 再部署服务端**。
 > 客户端侧已按此实现并回执（issue #2）；§5.5 的校验清单与实现对齐（UUID、报文体上限、限流口径）。
+> **v3.5 · 2026-11-02**（对齐真实客户端的 `website_id` + 记下两个待客户端修的契约缺口）：
+> 客户端 6.23.1 已发版并随安装器分发 `telemetry.bootstrap.json`，其中
+> `website_id = "robot-backup-checker"`；而本计划书与已部署服务端的常量是 `robot-checker`
+> → 服务端 `bad_website` → **400 → 客户端按毒报文丢弃 → 队列排空但一个数都没进**（静默丢数）。
+> **处置**：客户端已发布不能改 → **服务端与正本统一改为 `robot-backup-checker`**（本版），
+> 并已在 issue #2 公告，等客户端侧确认。
+> 另记两个**仍需客户端修**的契约缺口：① 报文**不带 `event_id`** → 服务端只能按
+> `id:name:tag:ts` 派生，而 `ts` 每次重试都变 → **幂等失效，补发风暴会重复计数**；
+> ② 报文**不带 `timestamp`** → `ts` 退回服务端接收时间 → 客户端事件时刻丢失（判据 5 不成立）。
 > 实施由**另一台电脑的 agent** 按 `docs/telemetry-handoff.md` 完成。
 > ⚠️ **取本文档请用 `git clone` 或 `gh api repos/.../contents/docs/telemetry-launch-plan.md`，不要用 `raw.githubusercontent.com`** —— 2026-10-28 实测：本次推送后 raw 仍返回旧版（其 CDN 缓存未刷新），照旧版实现会沿用已作废的免费档假设（30 天保留期、3,000–5,000 台设备上限、缺 `limits.cpu_ms` 刹车）。
 > ⚠️ **交接书 `docs/telemetry-handoff.md` 已同步至 v1.1（2026-10-28）** —— 附录 F 的 8 处差异中，**§3 接收端部分**已按实际实现改写并标注"被实现取代"，其余（软件端相关）仍待同步。
@@ -25,6 +34,7 @@
 | **v3.1** | 新增 §5.9 交叉运行边界；**新发现 zone 级 Bot/WAF 规则连坐子域**（真实 UA 被拦 → 4xx → 静默丢数据）；新增验收判据 14 |
 | **v3.3** | **Worker 接收端已实现并上线**，代码进本仓 `telemetry-receiver/`（§5.6 部署纪律的"禁止推进公开仓"改为带脱敏边界的"允许"）；交接书同步至 v1.1，§3 标注"被实现取代" |
 | **v3.4** | **上报端鉴权契约回写**：§4 响应语义表补 **401 / 413 / 429** 三行（**429 = 唯一可重试的 4xx**；**401 = 配置错误**，不得静默丢弃也不得无限重试）；§5.5 校验清单与实现对齐（UUID 放宽到 v1–v8 大小写不敏感、报文体 > 4096 → 413、限流改为 per-isolate 120/分钟）；附录 A 补 `ingest_key` 字段；写死**上线顺序（先客户端、后服务端）** |
+| **v3.5** | **`website_id` 对齐真实客户端**：客户端 6.23.1 模板用 `robot-backup-checker`，正本与已部署服务端原为 `robot-checker` → `bad_website` 400 → **静默丢数**（实测：客户端队列排空、服务端 0 入库）。服务端与正本统一改为 `robot-backup-checker`；另记两个待客户端修的缺口：**报文缺 `event_id`（幂等失效）**、**报文缺 `timestamp`（事件时刻丢失）** |
 
 ---
 
@@ -358,7 +368,7 @@ CREATE TABLE IF NOT EXISTS daily_rollup (
 | **Cron（1 个）** | 每日：① 聚合 `daily_rollup` 刷新 ② 删除 `ts` 超 90 天的 `events` ③ 清理超期的 `first_seen` | — |
 
 **校验清单（任一不过 → 400，客户端丢弃）**：
-`type == "event"` · `payload.website == "robot-checker"` · `payload.hostname == "app"` ·
+`type == "event"` · `payload.website == "robot-backup-checker"` · `payload.hostname == "app"` ·
 `payload.name ∈ 14 个白名单常量` · `payload.id` 匹配 UUID **v1–v8、大小写不敏感**
 （实现已放宽：v7 与大写 UUID 均接受；早先"仅 v4 小写"会让这类客户端 100% 静默丢数）·
 `payload.data.tag` 匹配 `[A-Za-z0-9_-]{1,32}` **且**（若该事件有固定取值域）tag ∈ 枚举 ·
@@ -416,7 +426,7 @@ wrangler d1 execute telemetry-db --file schema.sql --remote   # ⚠️ 必须 --
 #    [limits] cpu_ms = 50_000                  # 跑飞账单刹车
 #    [triggers] crons = ["23 4 * * *"]
 #    [[d1_databases]] binding = "DB" / database_id = "<id>"
-#    [vars] WEBSITE_ID = "robot-checker"
+#    [vars] WEBSITE_ID = "robot-backup-checker"
 #    # dashboard token 走 secret，不进 vars
 #    wrangler secret put DASHBOARD_TOKEN
 
@@ -506,6 +516,7 @@ npx wrangler deploy --config wrangler.local.toml
 |---|---|---|---|
 | 1 | **首启默认配置 bootstrap** | 若 `%APPDATA%/robot-backup-checker/telemetry.json` 不存在 → 写入内置默认（**含 `device_id`**，见下） | 0.5 天 |
 | 1b | **⚠️ 默认配置里的 endpoint + ingest_key（2026-11-02 复核新增）** | 复核 6.23.0 公开产物（`robot-backup-checker_6.23.0_portable.exe` + NSIS 包内 exe）：`telemetry.misakanet.org` **出现 0 次**、`k-`+40 形态 **0 个候选** —— 机制在（`ingest_key` / `X-Ingest-Key` / `ROBOT_CHECKER_TELEMETRY_URL` 都有），**默认值不在**。按 §2.3「文件不存在 → 零采集」→ 全新用户**不会有任何上报**。需二选一：bootstrap 写内置默认（含 endpoint + key，需重新出包）或**配置下发通道**（客户端拉取默认 `telemetry.json`，不必再出包但要先定下发端点） | 0.5 天 |
+| 1c | **⚠️ 报文缺 `event_id` / `timestamp`（2026-11-02 实测新增）** | 实测 6.23.1 真实报文：`payload` 里**没有 `event_id`，也没有 `timestamp`**。后果：① 服务端只能按 `id:name:tag:ts` 派生幂等键，而 `ts` 每次重试都变 → **唯一索引失效 → 补发风暴会重复计数**（幂等这个设计目标没达成）；② `ts` 退回服务端接收时间 → 客户端事件时刻丢失，判据 5「`ts` 取客户端时间戳」不成立。需在 `payload` 补 `timestamp`（客户端 Unix 秒）与 `event_id`（幂等键，重发同一条保持不变） | 0.5 天 |
 | 2 | **界面 opt-out 开关** | 设置区「使用统计」开关 → **写 `enabled:false`（总开关 = 真零采集）**；`usage_enabled` 若保留则作为独立二级开关，有独立入口 | 含上 |
 | 3 | **隐私声明** | README/发布页/GitHub Release 说明：匿名统计收集什么（14 事件 + 版本 + OS + 匿名设备 ID）、**不收集什么**、怎么关 | 文档 |
 | 4 | **契约配合（v2 新增）** | 报文加 `timestamp`（客户端 Unix 秒）与 `event_id`（幂等键）；客户端把 204 视为"已收妥直接丢弃"；5xx 指数退避 | 0.5 天 |
@@ -519,7 +530,7 @@ npx wrangler deploy --config wrangler.local.toml
 {
   "enabled": true,
   "endpoint": "https://telemetry.misakanet.org/api/send",
-  "website_id": "robot-checker",
+  "website_id": "robot-backup-checker",
   "usage_enabled": true,
   "device_id": "<持久化的 UUID v4，小写带横线；首启生成，之后只读不重生成>"
 }
@@ -626,6 +637,7 @@ npx wrangler deploy --config wrangler.local.toml
 | 17 | **报文体上限（v3.4 新增）** | 报文 > 4096 字节 | **413**（`error=too_large`），不入表；客户端丢弃不重试 —— ✅ **2026-11-02 线上实测通过** |
 | 18 | **限流语义（v3.4 新增）** | 突发请求超过单 isolate 120 次/分钟 | **429** + `Retry-After` 头（秒）；客户端**读该头退避后重试**（**唯一可重试的 4xx**），补发后靠 `event_id` 不重复计数 —— ✅ **2026-11-02 线上实测通过**（单连接连打**第 149 次**触发：初始 120 令牌 + 14.7s 按 2/s 补 29 = 149，与令牌桶实现完全吻合；`Retry-After: 1`） |
 | 19 | **单设备限流（⚠️ 当前未实现，缺口）** | 同一 `device_id` 1 小时内 > 20 次请求 | **尚未实现** —— 现只有 per-isolate 120 次/分钟桶，**多 isolate 并行挡不住**。需补齐 `device_id` 级限流后，此条才能转绿；补齐前靠每日闸门 + `limits.cpu_ms` + 账单告警兜底 |
+| 20 | **真实客户端首启能落库（v3.5 新增）** | 在**干净机器**上装客户端发行版 → 首次启动 | ✅ **2026-11-02 实测通过**（修正 `website_id` 后）：客户端 `installed_sent=true`、服务端 D1 出现该设备的 `app_installed` + `app_opened`（v6.23.1），`first_seen` +1（新用户口径生效） |
 
 ---
 
@@ -654,7 +666,7 @@ npx wrangler deploy --config wrangler.local.toml
 {
   "enabled": true,
   "endpoint": "https://telemetry.misakanet.org/api/send",
-  "website_id": "robot-checker",
+  "website_id": "robot-backup-checker",
   "usage_enabled": true,
   "ingest_key": "<上报端共享密钥（v3.4 新增），由部署方下发；缺失/不匹配 → 每次上报 401>",
   "device_id": "<首启生成的 UUID v4，持久化于此；之后只读不重生成>"

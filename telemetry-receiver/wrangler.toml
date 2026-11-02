@@ -38,7 +38,7 @@ database_name = "telemetry-db"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 [vars]
-WEBSITE_ID = "robot-checker"
+WEBSITE_ID = "robot-backup-checker"
 
 # 每日成本闸门（统一口径：按"事件数/请求数"计，不按行数计）
 # 折合 ≈ 4 万台日活设备；告警线取闸门线的 80%（计划书附录 E）

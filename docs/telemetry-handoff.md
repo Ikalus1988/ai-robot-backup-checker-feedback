@@ -8,6 +8,15 @@
 > 代码在本仓 `telemetry-receiver/`，端点 `https://telemetry.misakanet.org/api/send`。
 > 本文件的 §3 已标注"被实现取代"，**实施时以 `telemetry-receiver/` 实际代码为准**。
 >
+> **v1.4 变更（2026-11-02）**：**`website_id` 对齐真实客户端** + 记下两个待客户端修的契约缺口。
+> 客户端 6.23.1 随安装器分发的 `telemetry.bootstrap.json` 里是 `website_id = "robot-backup-checker"`，
+> 而本文件与已部署服务端原为 `robot-checker` → 服务端 `bad_website` → **400 → 客户端按毒报文丢弃**
+> → **队列排空但一个数都没进**（静默丢数）。客户端已发布不能改 → **服务端与本文件统一改为
+> `robot-backup-checker`**（已上线，等客户端侧确认）。
+> 另：实测 6.23.1 真实报文**不带 `event_id` 也不带 `timestamp`** → 服务端只能按 `id:name:tag:ts`
+> 派生幂等键（`ts` 每次重试都变 → **幂等失效**），且客户端事件时刻丢失（判据 5 不成立）。
+> 详见计划书 §6 工作项 1c 与 issue #2。
+>
 > **v1.2 变更（2026-10-29）**：新增 **timeout 语义**（§2.1 专条 + §7 判据 9、10）——
 > 实测发现企业网出口 → Cloudflare 存在**间歇性超时**且**请求已落地、响应丢失**，
 > 客户端必然遇到「结果未知」态；契约原本只写 2xx/4xx/5px，缺 timeout 语义会致实施方误当 4xx 丢弃。
@@ -170,7 +179,7 @@
 {
   "enabled": true,
   "endpoint": "https://<接收端域名>/api/send",
-  "website_id": "robot-checker",
+  "website_id": "robot-backup-checker",
   "usage_enabled": true,
   "ingest_key": "<上报端共享密钥（v1.3 新增），由部署方线下下发；缺失/不匹配 → 每次上报 401>"
 }
@@ -180,7 +189,7 @@
   - 文件不存在 → **零采集零足迹**（现状行为，已测锁）
   - `enabled: false` → 零采集（总开关 = 界面「使用统计」开关写这个字段）
   - `usage_enabled: false` → 只关 12 项使用事件，保留首启/心跳
-  - `website_id` 固定用 `robot-checker`
+  - `website_id` 固定用 `robot-backup-checker`（v1.4：与客户端 6.23.1 模板一致；原为 `robot-checker`，不匹配 → 400 静默丢数）
   - `ingest_key` = 上报端共享密钥；客户端**每次 `POST {endpoint}` 都要带
     `X-Ingest-Key: <这个值>` 头**。**不内嵌进二进制**，由部署方线下下发、随配置下发。
     客户端没拿到 key 时**照发**（不静默停采）→ 服务端 401 → 客户端响亮报错
@@ -348,6 +357,12 @@ npx wrangler deploy                                  # → https://telemetry-rec
 12. **413 语义（v1.3 新增）**：报文 > 4096 字节 → 413，客户端**丢弃不重试**
 13. **429 语义（v1.3 新增）**：超过单 isolate 速率 → 429 + `Retry-After` 头，
     客户端**读该头退避后重试**（**唯一可重试的 4xx**），到期补发且靠 `event_id` 不重复计数
+14. **真实客户端首启能落库（v1.4 新增）**：在**干净机器**上装发行版 → 首次启动 →
+    服务端 D1 能查到该设备的 `app_installed` + `app_opened`。
+    ⚠️ 本条曾长期红：**`website_id` 不匹配 → 400 → 客户端丢弃 → 队列排空但零入库**，
+    看起来像"客户端没发"。排查手法：抓服务端 tail 的**响应状态码** + 抓客户端真实报文，
+    两边对不上就是值不一致（字节级比，别靠眼睛）。
+    ✅ 2026-11-02 修正 `website_id` 后实测通过
 
 ---
 
@@ -360,6 +375,6 @@ npx wrangler deploy                                  # → https://telemetry-rec
 ## 9. 联系与决策口径
 
 - 默认开关口径已定：**默认开 + 界面可关 + 明示**（勿改）
-- `website_id` = `robot-checker`；endpoint 部署后由实施方填入软件常量
+- `website_id` = `robot-backup-checker`（v1.4，与客户端发行版一致）；endpoint 部署后由实施方填入软件常量
 - 若 CF 路线受阻：备选 B（VPS+Umami）**应用端零改动**（协议同 Umami `/api/send`），
   只改配置端点即可，见计划书附录 D

@@ -81,7 +81,7 @@ WAF / Bot 规则拦下（计划书 §5.9）——**不是报文非法**，不得
 
 ### 鉴权（`X-Ingest-Key`）
 
-- 为什么必须有：`WEBSITE_ID = "robot-checker"` 是 `wrangler.toml` 里的**公开常量**，校验它等于没校验 ——
+- 为什么必须有：`WEBSITE_ID = "robot-backup-checker"` 是 `wrangler.toml` 里的**公开常量**，校验它等于没校验 ——
   任何人都能伪造事件；每条被接受的请求要写 3–4 行 D1，伪造流量烧写额度，
   还会触发存储闸门把 `paused` 置 1，**之后所有真实遥测被静默 204 丢弃**。
 - **fail closed**：`INGEST_KEY` 没配 → 返 `500 {"error":"misconfigured"}` + `console.error`，
