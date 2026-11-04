@@ -8,6 +8,12 @@
 > 代码在本仓 `telemetry-receiver/`，端点 `https://telemetry.misakanet.org/api/send`。
 > 本文件的 §3 已标注"被实现取代"，**实施时以 `telemetry-receiver/` 实际代码为准**。
 >
+> **v1.5 变更（2026-11-02）**：新增 **单设备限流判据**（§7 判据 15）。
+> 服务端已上线 `device_id` 每小时 > **60** 次 → 429 + `Retry-After` + `scope":"per-device"`
+> （per-isolate 内存计数，不写 D1）。阈值由原定 20 上调到 60 —— 实测真实用户单设备
+> 单小时峰值 **17**（批量功能事件成批产生），20 会误伤正常批量操作。
+> 客户端侧无需改动：429 已在既有分类里（`rate_limited`），读 `Retry-After` 退避即可。
+>
 > **v1.4 变更（2026-11-02）**：**`website_id` 对齐真实客户端** + 记下两个待客户端修的契约缺口。
 > 客户端 6.23.1 随安装器分发的 `telemetry.bootstrap.json` 里是 `website_id = "robot-backup-checker"`，
 > 而本文件与已部署服务端原为 `robot-checker` → 服务端 `bad_website` → **400 → 客户端按毒报文丢弃**
@@ -363,6 +369,10 @@ npx wrangler deploy                                  # → https://telemetry-rec
     看起来像"客户端没发"。排查手法：抓服务端 tail 的**响应状态码** + 抓客户端真实报文，
     两边对不上就是值不一致（字节级比，别靠眼睛）。
     ✅ 2026-11-02 修正 `website_id` 后实测通过
+15. **单设备限流（v1.5 新增）**：同一 `device_id` 1 小时内发 > **60** 次请求 →
+    **429** + `Retry-After` 头 + `{"error":"rate_limited","scope":"per-device"}`。
+    ⚠️ 与速率限流（`scope":"per-isolate"`）**scope 要能区分**（两者的处置不同）。
+    ✅ 2026-11-02 实测通过：第 61 次触发
 
 ---
 

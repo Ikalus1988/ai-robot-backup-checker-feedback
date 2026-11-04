@@ -40,6 +40,11 @@ GATE_EVT_DAY = "100000"
 GATE_RETENTION_BACKLOG_ROWS = "1000"
 # 单 isolate 令牌桶限流（per-isolate，非全局精确）
 RATE_LIMIT_PER_MIN = "120"
+
+# 单设备限流：同一 device_id 每小时最多放行多少个上报请求（超了返 429 + Retry-After）。
+# ⚠️ 口径：**per-isolate 内存计数**（不写 D1），不是跨 isolate 全局精确；
+#    跨 isolate 并行的兜底是每日闸门（D1，跨 isolate 精确）。
+DEVICE_LIMIT_PER_HOUR = "60"
 RETENTION_DAYS = "90"
 
 [observability]

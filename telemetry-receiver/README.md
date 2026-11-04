@@ -79,6 +79,22 @@ WAF / Bot 规则拦下（计划书 §5.9）——**不是报文非法**，不得
 - 超限返回 **429 + `Retry-After`（秒）** + `{"error":"rate_limited","retry_after":N,"scope":"per-isolate"}`。
 - 阈值走 `wrangler.toml` 的 `[vars] RATE_LIMIT_PER_MIN`，当前配置 **120/分钟/isolate**，在 `/healthz` 里可见。
 
+### 单设备限流（429，`scope: per-device`）
+
+- **每 isolate、每 `device_id`、每小时的请求计数**：超过 `DEVICE_LIMIT_PER_HOUR` → **429 + `Retry-After`（剩余窗口秒数）**
+  + `{"error":"rate_limited","retry_after":N,"scope":"per-device"}`。
+- ⚠️ **per-isolate 内存计数，同样不是全局精确**：CF 把请求分散到多个 isolate，每个 isolate 各数一份。
+  它挡住的是「单个客户端的重试 bug / 死循环」——这类失控几乎总集中在少数 isolate。
+  **跨 isolate 并行的单设备失控仍靠每日闸门兜底**（D1 `gate` 表，跨 isolate 精确）。
+- **不写 D1**：纯内存计数，**零额外写行**（不抬高写额度、不影响账单）。
+- 阈值走 `[vars] DEVICE_LIMIT_PER_HOUR`，当前 **60/小时**。
+  ⚠️ **为什么不是 20**：2026-11-04 实测真实用户单设备单小时峰值 **17**
+  （批量功能事件 `feature_batch` / `check_hit` 会成批产生）→ 20 会**误伤正常批量操作**。
+  失控客户端（重试风暴）分钟级可达数百次 → 仍被稳稳挡住。
+- 放在**每日闸门之前**：失控设备要在烧 D1 额度之前就被挡住，而不是先花一次 D1 读。
+- 与速率限流的 `scope` 不同（`per-device` vs `per-isolate`）→ 可区分；但客户端处理方式相同
+  （429 = 唯一可重试的 4xx，读 `Retry-After` 退避）。
+
 ### 鉴权（`X-Ingest-Key`）
 
 - 为什么必须有：`WEBSITE_ID = "robot-backup-checker"` 是 `wrangler.toml` 里的**公开常量**，校验它等于没校验 ——

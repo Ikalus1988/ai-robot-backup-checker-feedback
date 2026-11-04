@@ -38,6 +38,8 @@ export interface Env {
   INGEST_KEY: string;
   /** 每 isolate 每分钟允许的上报请求数（令牌桶容量） */
   RATE_LIMIT_PER_MIN?: string;
+  /** 每 isolate 每小时允许的**单设备**上报请求数（超出 → 429） */
+  DEVICE_LIMIT_PER_HOUR?: string;
 }
 
 // ── 白名单：显式数组常量，不要用前缀匹配 ──────────────────────
@@ -348,6 +350,54 @@ async function readBodyLimited(req: Request, limit: number): Promise<
 // 这种最容易造成跑飞账单的情况。
 // 响应码 429：报文**合法**但太频繁 → 这是 4xx「丢弃不重试」语义的一个**例外**，
 //   客户端必须读 Retry-After 头退避后重试（README 已写死这条约定）。
+// ── 单设备限流（计划书 §5.7 / §9 判据 19）────────────────────────
+// ⚠️ 口径：**per-isolate 内存计数**，**不是跨 isolate 全局精确**。
+//    作用：挡住「单个客户端的重试 bug / 死循环」——这类失控几乎总集中在少数 isolate。
+//    跨 isolate 并行的兜底是**每日闸门**（D1 gate 表，跨 isolate 精确，判据 8/9）。
+//    这个实现**不写 D1**（内存计数，零额外写行）——所以不会抬高写额度。
+// 阈值依据（2026-11-04 服务端 D1 实测）：真实用户单设备单小时峰值 **17 次**
+//    —— 批量功能事件会成批产生（feature_batch / check_hit / perf_batch）。
+//    原计划书写的 20 次/小时**会误伤正常批量操作** → 上调到 60（留 3.5 倍余量）。
+//    失控客户端（重试风暴）分钟级可达数百次 → 仍被稳稳挡住。
+const DEVICE_WINDOW_MS = 3_600_000;
+const DEFAULT_DEVICE_LIMIT_PER_HOUR = 60;
+const DEVICE_MAP_MAX = 2000;
+
+// 每个 isolate 一份；条目按小时窗口自动重置，size 超上限整体清空（防内存无限涨）
+const deviceBuckets = new Map<string, { windowStart: number; count: number }>();
+
+function resolveDeviceLimit(env: Env): number {
+  const raw = env.DEVICE_LIMIT_PER_HOUR;
+  if (raw === undefined || raw === null || raw === "") {
+    logOnce(
+      "DEVICE_LIMIT_PER_HOUR",
+      "error",
+      `[config] DEVICE_LIMIT_PER_HOUR 缺失 → 使用默认 ${DEFAULT_DEVICE_LIMIT_PER_HOUR}/小时/isolate。请在 wrangler.toml [vars] 显式配置。`,
+    );
+    return DEFAULT_DEVICE_LIMIT_PER_HOUR;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new ConfigError("DEVICE_LIMIT_PER_HOUR", raw, "不是有限正数");
+  return n;
+}
+
+function takeDeviceToken(deviceId: string, limit: number): { ok: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const windowStart = Math.floor(now / DEVICE_WINDOW_MS) * DEVICE_WINDOW_MS;
+  let b = deviceBuckets.get(deviceId);
+  if (!b || b.windowStart !== windowStart) {
+    if (deviceBuckets.size >= DEVICE_MAP_MAX) deviceBuckets.clear();
+    b = { windowStart, count: 0 };
+    deviceBuckets.set(deviceId, b);
+  }
+  b.count += 1;
+  if (b.count > limit) {
+    const remainMs = windowStart + DEVICE_WINDOW_MS - now;
+    return { ok: false, retryAfterSec: Math.max(1, Math.ceil(remainMs / 1000)) };
+  }
+  return { ok: true, retryAfterSec: 0 };
+}
+
 interface TokenBucket { tokens: number; last: number }
 const bucket: TokenBucket = { tokens: 0, last: 0 };
 const RATE_WINDOW_MS = 60_000;
@@ -461,6 +511,33 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
   const eventId = typeof p.event_id === "string" && p.event_id.length > 0 && p.event_id.length <= 64
     ? p.event_id
     : `${p.id}:${p.name}:${tag}:${ts}`;
+
+  // ── 3.5) 单设备限流（内存计数，零 D1 开销）────────────────────────
+  // 放在每日闸门**之前**：失控设备要在烧 D1 额度之前就被挡住，而不是先花一次 D1 读。
+  // 语义与令牌桶一致：429 + Retry-After（契约里「唯一可重试的 4xx」）→ 客户端退避后重发。
+  // 正常用户（每天 2 个请求）永远碰不到这条。
+  const deviceLimit = resolveDeviceLimit(env);
+  const deviceToken = takeDeviceToken(p.id, deviceLimit);
+  if (!deviceToken.ok) {
+    console.warn(
+      `[devicelimit] 单设备 ${p.id} 超 ${deviceLimit} 次/小时 → 429，Retry-After=${deviceToken.retryAfterSec}s`,
+    );
+    return new Response(
+      JSON.stringify({
+        error: "rate_limited",
+        message: `单设备请求过于频繁（${deviceLimit} 次/小时）。请读 Retry-After 头退避后重试。`,
+        retry_after: deviceToken.retryAfterSec,
+        scope: "per-device",
+      }),
+      {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": String(deviceToken.retryAfterSec),
+        },
+      },
+    );
+  }
 
   // ── 成本闸门：超预算 → 204（2xx，客户端视为已收妥，直接丢弃、不入队、不重试）──
   // 判定读 D1 的 gate 行：受理路径每次都把计数写进同一个 batch，
@@ -779,6 +856,8 @@ async function handleHealth(env: Env) {
     // 限流配置（注意是 per-isolate，不是全局精确）
     rate_limit_per_min: resolveRateLimit(env),
     rate_limit_scope: "per-isolate",
+    device_limit_per_hour: resolveDeviceLimit(env),
+    device_limit_scope: "per-isolate",
     // 存储闸门：真实判据是「超期未清行数」，阈值可配
     backlog_limit_rows: backlog.limit,
     backlog_limit_source: backlog.source,
