@@ -870,36 +870,44 @@ async function handleHealth(env: Env) {
 }
 
 // ── Cron：重算最近 2 天聚合（幂等可重跑）+ 分批清理过期明细 ────
+// ⚠️ 聚合窗口必须是 **8 天**，不能只取 2 天：
+//    看板读 rollup 的窗口是 `date('now','-7 days')`（7 日 DAU / 7 日留存），
+//    而 cron 原来只聚合最近 2 天 → **第 2~7 天前的快照一旦落定就永久冻结**：
+//    事后修正明细（比如清掉测试数据）**不会**传导到看板，rollup 与明细会长期不一致。
+//    8 天 = 覆盖看板可见窗口 + 1 天余量 → 每天的快照都会被重算，修正能在下一个 cron 周期传导。
+//    成本：聚合读的明细行数从 2 天变 8 天（满闸门 100k/天 时约 80 万行/次 × 6 条语句）；
+//    读额度按 $0.001/百万行计，即使打满闸门也只是每月 ~$1.4 量级，远小于写额度。
+const ROLLUP_WINDOW_DAYS = 8;
 const ROLLUP_SQL: string[] = [
   `SELECT date(ts,'unixepoch') AS day, 'dau' AS metric, '' AS dim,
           COUNT(DISTINCT device_id) AS value
      FROM events
-    WHERE name='app_opened' AND ts >= strftime('%s','now','-2 days')
+    WHERE name='app_opened' AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
     GROUP BY 1`,
   `SELECT date(first_ts,'unixepoch') AS day, 'new_users' AS metric, '' AS dim,
           COUNT(*) AS value
      FROM first_seen
-    WHERE first_ts >= strftime('%s','now','-2 days')
+    WHERE first_ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
     GROUP BY 1`,
   `SELECT date(ts,'unixepoch') AS day, 'events' AS metric, '' AS dim,
           COUNT(*) AS value
      FROM events
-    WHERE ts >= strftime('%s','now','-2 days')
+    WHERE ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
     GROUP BY 1`,
   `SELECT date(ts,'unixepoch') AS day, name AS metric, '' AS dim,
           COUNT(*) AS value
      FROM events
-    WHERE name LIKE 'feature_%' AND ts >= strftime('%s','now','-2 days')
+    WHERE name LIKE 'feature_%' AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
     GROUP BY 1, 2`,
   `SELECT date(ts,'unixepoch') AS day, 'err' AS metric, name AS dim,
           COUNT(*) AS value
      FROM events
-    WHERE name LIKE 'err_%' AND ts >= strftime('%s','now','-2 days')
+    WHERE name LIKE 'err_%' AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
     GROUP BY 1, 3`,
   `SELECT date(ts,'unixepoch') AS day, 'version' AS metric, app_version AS dim,
           COUNT(DISTINCT device_id) AS value
      FROM events
-    WHERE ts >= strftime('%s','now','-2 days')
+    WHERE ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
     GROUP BY 1, 3`,
 ];
 
