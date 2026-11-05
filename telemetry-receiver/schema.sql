@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS events (
   app_version TEXT NOT NULL DEFAULT '',
   os          TEXT NOT NULL DEFAULT '',
   ts          INTEGER NOT NULL,           -- 事件发生时间（优先取客户端 timestamp）
-  recv_ts     INTEGER NOT NULL            -- 服务端接收时间（回退统计用）
+  recv_ts     INTEGER NOT NULL,            -- 服务端接收时间（回退统计用）
+  stale_exe   INTEGER NOT NULL DEFAULT 0   -- 契约 v3.5.1：来自旧 exe 副本的事件标记（客户端判定）
 );
 -- 幂等：部分唯一索引，补发风暴重放不会重复计数、也不重复计费
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id) WHERE event_id <> '';
@@ -50,3 +51,9 @@ CREATE TABLE IF NOT EXISTS gate (
   dropped    INTEGER NOT NULL DEFAULT 0,
   paused     INTEGER NOT NULL DEFAULT 0   -- 存储闸门：清理跟不上写入时置 1
 );
+
+-- ── 已有库的迁移（v3.5.1 新增列）────────────────────────────────
+-- 新建库直接用上面的 CREATE TABLE 即可；**已有库**（列已建好）不需要再动。
+-- 首次加上这一列时执行过：
+--   ALTER TABLE events ADD COLUMN stale_exe INTEGER NOT NULL DEFAULT 0;
+-- （2026-11-05 已在远端 telemetry-db 执行）

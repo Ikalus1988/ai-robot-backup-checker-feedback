@@ -488,6 +488,11 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
 
   const data = (p.data && typeof p.data === "object") ? p.data : {};
   const tag = typeof data.tag === "string" ? data.tag : "";
+  // 契约 v3.5.1：data.stale_exe —— 客户端在**入队时**判定「本机见到的最高版本」，
+  // 若本事件来自一个更旧的 exe 副本，就带上 stale_exe="1"（版本号如实报，但可辨识）。
+  // 服务端只**存**不用（判定权在客户端，因为它知道哪份 exe 是旧的）；
+  // 用途：新版本铺开后按它把「旧副本事件」从版本维度里摘掉，不影响功能事件计数。
+  const staleExe = data.stale_exe === "1" || data.stale_exe === 1 ? 1 : 0;
   // tag 可为空（生命周期事件 app_installed/app_opened 没有 tag，客户端发 ""）；
   // 非空时必须匹配 [A-Za-z0-9_-]{1,32}。
   // ⚠️ 契约要点：早先按 {1,32} 严格校验会把空 tag 判成 400 —— 那会让所有生命周期事件
@@ -561,8 +566,8 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
   const statements = [
     env.DB.prepare(
       `INSERT OR IGNORE INTO events
-         (event_id, device_id, name, tag, app_version, os, ts, recv_ts)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8)`,
+         (event_id, device_id, name, tag, app_version, os, ts, recv_ts, stale_exe)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)`,
     ).bind(
       eventId,
       p.id,
@@ -572,6 +577,7 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
       String(data.os ?? "").slice(0, 16),
       ts,
       recvTs,
+      staleExe,
     ),
   ];
 
