@@ -21,3 +21,6 @@ prod-secrets.local.txt
 *.db-journal
 dumps/
 *.csv
+
+# 测试环境配置（含真实 CF account_id / D1 database_id），不入仓
+wrangler.test.toml

@@ -1,0 +1,11 @@
+{
+  "_comment": "测试环境上报配置模板（契约 v3.8「测试流量双标记」）。复制成 telemetry.json 使用。",
+  "_note1": "ingest_key 由实施方线下交付（与生产 key 一样的方式），**不要提交进任何仓库**。",
+  "_note2": "测试 device_id 首段必须全零（00000000-xxxx-4xxx-xxxx-xxxxxxxxxxxx）——这是双标记的另一半。",
+  "_note3": "服务端统计口径已按「非 0000%」天然排除测试数据，无需事后补救。",
+  "enabled": true,
+  "endpoint": "https://rbc-telemetry-test.eric-jia1920.workers.dev/api/send",
+  "website_id": "robot-checker-test",
+  "ingest_key": "<测试 INGEST_KEY，由实施方线下交付>",
+  "usage_enabled": true
+}

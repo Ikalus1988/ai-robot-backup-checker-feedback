@@ -8,6 +8,11 @@
 > 代码在本仓 `telemetry-receiver/`，端点 `https://telemetry.misakanet.org/api/send`。
 > 本文件的 §3 已标注"被实现取代"，**实施时以 `telemetry-receiver/` 实际代码为准**。
 >
+> **v1.7 变更（2026-11-09）**：新增**测试环境配置**（§2.3）：独立 endpoint（workers.dev）、
+> 独立 `website_id`、独立 `INGEST_KEY`、独立 D1 库；配合**测试流量「双标记」**
+> —— 测试 `device_id` 首段全零（`00000000-…`），服务端统计口径已按「非 `0000%`」**天然排除**，
+> 测试流量**不吃生产预算**。完整规定见计划书 §6.1。
+>
 > **v1.6 变更（2026-11-05）**：服务端已支持契约 **v3.5.1** 的 `data.stale_exe`
 > （新增 `events.stale_exe` 列，远端已迁移，实测 `"1"`→1 / 不带→0）。
 > **服务端只存不用**（判定权在客户端）；**版本维度的聚合口径暂不改**，
@@ -185,6 +190,16 @@
 
 - 路径：`%APPDATA%\robot-backup-checker\telemetry.json`
   （测试口：进程级环境变量 `ROBOT_CHECKER_CONFIG_DIR` 可重定向）
+- **两套配置**（v1.7 新增测试环境，与生产**完全隔离**）：
+
+| | 生产 | 测试（验收/压测链专用） |
+|---|---|---|
+| endpoint | `https://telemetry.misakanet.org/api/send` | `https://rbc-telemetry-test.eric-jia1920.workers.dev/api/send` |
+| `website_id` | `robot-backup-checker` | `robot-checker-test` |
+| `INGEST_KEY` | 生产那把（实施方线下交付） | **独立的一把**（指纹 `1913d2e868c16af8`），实施方线下交付 |
+| `device_id` | 客户端生成 UUID v4 | **首段全零**：`00000000-xxxx-4xxx-xxxx-xxxxxxxxxxxx`（测试流量双标记） |
+| 模板 | 客户端 bootstrap 内置 | 公开仓 `telemetry-receiver/telemetry.test.template.json` |
+
 - 内容：
 
 ```json

@@ -593,14 +593,18 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
   // 闸门计数：req = 本次受理的请求数，evt = 本次受理的事件数。
   // 幂等重放也计入（请求照样消耗了 Worker 调用与 D1 语句）——
   // 重放风暴本来就该把闸门顶开，这是成本保护，不是缺陷。
-  statements.push(
-    env.DB.prepare(
-      `INSERT INTO gate (day, req_count, evt_count, dropped) VALUES (?1,1,1,0)
-       ON CONFLICT(day) DO UPDATE SET
-         req_count = req_count + 1,
-         evt_count = evt_count + 1`,
-    ).bind(day),
-  );
+  // ⚠️ **测试设备不计入闸门**（双标记口径）：测试流量本就该走独立 endpoint/库，
+  //    万一还是打到生产库，也不该吃生产预算、也不该把存储闸门顶开（否则真实遥测会被 204 静默丢弃）。
+  if (!isTestDevice(p.id)) {
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO gate (day, req_count, evt_count, dropped) VALUES (?1,1,1,0)
+         ON CONFLICT(day) DO UPDATE SET
+           req_count = req_count + 1,
+           evt_count = evt_count + 1`,
+      ).bind(day),
+    );
+  }
 
   await env.DB.batch(statements);
   return json(200, { ok: true });
@@ -669,19 +673,35 @@ async function readGate(env: Env, day: string): Promise<GateRow> {
 // 口径一致性：今日实时算与 rollup 用**同一套 SQL 表达式**，只是数据源不同
 // （今日从 events 明细实时 GROUP BY，历史从 daily_rollup 读已聚合值），
 // 所以同一天的两条路径结果一致（判据 10「看板 vs 手写 SQL」）。
+// ── 测试流量「双标记」口径（契约 v3.8，2026-11-09 客户端团队拍板）────────
+// 约定（双方）：测试流量同时带两个标记 ——
+//   ① 测试 device_id 首段全零：`00000000-xxxx-4xxx-xxxx-xxxxxxxxxxxx`（UUID v4 形态不变）
+//   ② 测试 endpoint / website_id（独立 D1 库 + workers.dev 端点，客户端侧执行）
+// 服务端这一半：**统计口径天然排除 `0000%`** —— 测试数据不进看板、不吃预算、不用事后补救。
+// 为什么服务端按 device_id 排、而不是按上报的 website_id：
+//   website_id 是**上报方给的字段**，按它过滤等于信任上报内容；
+//   device_id 的首段是客户端**生成时**就固定的，服务端能独立识别，不依赖上报内容。
+//   （客户端的 UUID v1–v8 校验不受影响：形态、版本位、变体位都保留）
+const TEST_DEVICE_EXCLUDE = "device_id NOT LIKE '0000%'";
+
+/** 是否测试设备（首段全零）——与上面的 SQL 口径保持一致 */
+function isTestDevice(deviceId: string): boolean {
+  return deviceId.startsWith("0000");
+}
+
 const LIVE_SQL: string[] = [
   `SELECT 'dau' AS metric, '' AS dim, COUNT(DISTINCT device_id) AS value
-     FROM events WHERE name='app_opened' AND ts >= ?1`,
+     FROM events WHERE name='app_opened' AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE}`,
   `SELECT 'new_users' AS metric, '' AS dim, COUNT(*) AS value
-     FROM first_seen WHERE first_ts >= ?1`,
+     FROM first_seen WHERE first_ts >= ?1 AND ${TEST_DEVICE_EXCLUDE}`,
   `SELECT 'events' AS metric, '' AS dim, COUNT(*) AS value
-     FROM events WHERE ts >= ?1`,
+     FROM events WHERE ts >= ?1 AND ${TEST_DEVICE_EXCLUDE}`,
   `SELECT name AS metric, '' AS dim, COUNT(*) AS value
-     FROM events WHERE name LIKE 'feature_%' AND ts >= ?1 GROUP BY name`,
+     FROM events WHERE name LIKE 'feature_%' AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY name`,
   `SELECT 'err' AS metric, name AS dim, COUNT(*) AS value
-     FROM events WHERE name LIKE 'err_%' AND ts >= ?1 GROUP BY name`,
+     FROM events WHERE name LIKE 'err_%' AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY name`,
   `SELECT 'version' AS metric, app_version AS dim, COUNT(DISTINCT device_id) AS value
-     FROM events WHERE ts >= ?1 GROUP BY app_version`,
+     FROM events WHERE ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY app_version`,
 ];
 
 // ── 看板口令：优先 Authorization: Bearer 头，兼容 ?token= ──────
@@ -889,31 +909,37 @@ const ROLLUP_SQL: string[] = [
           COUNT(DISTINCT device_id) AS value
      FROM events
     WHERE name='app_opened' AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
+      AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1`,
   `SELECT date(first_ts,'unixepoch') AS day, 'new_users' AS metric, '' AS dim,
           COUNT(*) AS value
      FROM first_seen
     WHERE first_ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
+      AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1`,
   `SELECT date(ts,'unixepoch') AS day, 'events' AS metric, '' AS dim,
           COUNT(*) AS value
      FROM events
     WHERE ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
+      AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1`,
   `SELECT date(ts,'unixepoch') AS day, name AS metric, '' AS dim,
           COUNT(*) AS value
      FROM events
     WHERE name LIKE 'feature_%' AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
+      AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1, 2`,
   `SELECT date(ts,'unixepoch') AS day, 'err' AS metric, name AS dim,
           COUNT(*) AS value
      FROM events
     WHERE name LIKE 'err_%' AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
+      AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1, 3`,
   `SELECT date(ts,'unixepoch') AS day, 'version' AS metric, app_version AS dim,
           COUNT(DISTINCT device_id) AS value
      FROM events
     WHERE ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
+      AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1, 3`,
 ];
 
