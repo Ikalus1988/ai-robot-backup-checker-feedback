@@ -52,8 +52,26 @@ CREATE TABLE IF NOT EXISTS gate (
   paused     INTEGER NOT NULL DEFAULT 0   -- 存储闸门：清理跟不上写入时置 1
 );
 
--- ── 已有库的迁移（v3.5.1 新增列）────────────────────────────────
--- 新建库直接用上面的 CREATE TABLE 即可；**已有库**（列已建好）不需要再动。
--- 首次加上这一列时执行过：
---   ALTER TABLE events ADD COLUMN stale_exe INTEGER NOT NULL DEFAULT 0;
--- （2026-11-05 已在远端 telemetry-db 执行）
+-- 每台设备在本库见过的**最高 app_version**（服务端 stale 推断的依据）。
+-- 由服务端维护：事件到达时点查，比高则更新。写只发生在首见/版本升级时。
+CREATE TABLE IF NOT EXISTS device_version (
+  device_id   TEXT PRIMARY KEY,
+  max_version TEXT NOT NULL DEFAULT '',
+  updated_at  INTEGER NOT NULL DEFAULT 0
+);
+
+-- ── 已有库的迁移（v3.9：服务端 stale 推断）──────────────────────
+-- 首次加上 device_version 表时执行过：
+--   CREATE TABLE IF NOT EXISTS device_version (
+--     device_id   TEXT PRIMARY KEY,
+--     max_version TEXT NOT NULL DEFAULT '',
+--     updated_at  INTEGER NOT NULL DEFAULT 0
+--   );
+--
+-- 回填（可选）：服务端推断是**顺序依赖**的——若旧副本先跑，它的事件在写入时还不知道
+-- 有更高版本，会留 stale_exe=0；等高版本出现后可手动回填：
+--   UPDATE events SET stale_exe = 1
+--    WHERE stale_exe = 0 AND app_version < (
+--      SELECT max_version FROM device_version WHERE device_id = events.device_id);
+-- ⚠️ events 表**刻意没建 device_id 索引**（看板去重走 rollup），这条回填会**全表扫**，
+--    行数大时慎用（只在新版本上线后的短期窗口内跑）。

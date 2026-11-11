@@ -399,6 +399,67 @@ function takeDeviceToken(deviceId: string, limit: number): { ok: boolean; retryA
 }
 
 interface TokenBucket { tokens: number; last: number }
+
+// ── 语义化版本比较（只比数字段，忽略 -beta 之类后缀）────────────
+// ⚠️ 不能按字符串比：'6.9.0' > '6.26.0'（字符串比会判反）。
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".");
+  const pb = b.split(".");
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const na = parseInt(pa[i] ?? "0", 10) || 0;
+    const nb = parseInt(pb[i] ?? "0", 10) || 0;
+    if (na !== nb) return na < nb ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * 服务端推断「这条事件来自更旧的 exe 副本」（契约 v3.9 第一步）。
+ *
+ * 依据：同一 `device_id` 出现过的**最高 app_version**。若本事件的版本低于它 → 旧副本事件。
+ *
+ * 成本：每次事件一次**主键点查**（device_version 表）；写只发生在「首次见到该设备」
+ * 或「版本升级」时，罕见 ⇒ 写放大可忽略。
+ * 局限（已知）：**顺序依赖** —— 若旧副本先跑，它的事件在写入时还不知道有更高版本，
+ *              会留 stale_exe=0；等高版本出现后再回填（回填语句见 schema.sql 注释）。
+ */
+async function resolveStaleExe(
+  env: Env,
+  deviceId: string,
+  version: string,
+  clientStale: number,
+): Promise<{ stale: number }> {
+  if (!version) return { stale: clientStale };
+  try {
+    const row = await env.DB.prepare(
+      `SELECT max_version FROM device_version WHERE device_id = ?1`,
+    ).bind(deviceId).first<{ max_version: string }>();
+    const known = row?.max_version ?? "";
+    if (!known) {
+      await env.DB.prepare(
+        `INSERT INTO device_version (device_id, max_version, updated_at) VALUES (?1,?2,?3)
+         ON CONFLICT(device_id) DO UPDATE SET max_version=excluded.max_version,
+                                                updated_at=excluded.updated_at`,
+      ).bind(deviceId, version, Math.floor(Date.now() / 1000)).run();
+      return { stale: clientStale };
+    }
+    const cmp = compareVersions(version, known);
+    if (cmp > 0) {
+      // 本事件是这台设备见过的最高版本 → 记下来（写只发生在这里）
+      await env.DB.prepare(
+        `UPDATE device_version SET max_version=?2, updated_at=?3 WHERE device_id=?1`,
+      ).bind(deviceId, version, Math.floor(Date.now() / 1000)).run();
+      return { stale: clientStale };
+    }
+    if (cmp < 0) return { stale: 1 };  // 比已知最高版本旧 → 服务端判定为旧副本事件
+    return { stale: clientStale };
+  } catch (err) {
+    // 推断失败**不能影响上报**（这是观测增强，不是准入条件）：降级为只用客户端标记
+    console.error("[stale] 推断失败，降级为客户端标记：", err);
+    return { stale: clientStale };
+  }
+}
 const bucket: TokenBucket = { tokens: 0, last: 0 };
 const RATE_WINDOW_MS = 60_000;
 
@@ -490,9 +551,20 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
   const tag = typeof data.tag === "string" ? data.tag : "";
   // 契约 v3.5.1：data.stale_exe —— 客户端在**入队时**判定「本机见到的最高版本」，
   // 若本事件来自一个更旧的 exe 副本，就带上 stale_exe="1"（版本号如实报，但可辨识）。
-  // 服务端只**存**不用（判定权在客户端，因为它知道哪份 exe 是旧的）；
-  // 用途：新版本铺开后按它把「旧副本事件」从版本维度里摘掉，不影响功能事件计数。
-  const staleExe = data.stale_exe === "1" || data.stale_exe === 1 ? 1 : 0;
+  //
+  // ⚠️ 但**客户端的标记并不总是可用**（2026-11-09 实测 v6.26.0 + 客户端团队回执）：
+  //   ① ≤6.25.1 的旧副本**代码早于 v3.5.1**，压根没有标记逻辑 → 永远标不上；
+  //   ② ≥6.26.0 的旧副本**有**逻辑，但「判 stale 的依据」（state 里的 max_app_version）
+  //      会被更旧的副本写回时抹掉 → 也标不上（客户端已在 v6.26.1 修，但 ≤6.25.1 修不了）。
+  // 所以服务端**再推断一遍**（契约 v3.9 第一步）：按「同一 device_id 出现过的最高 app_version」
+  // 判定本事件是否来自更旧的副本。
+  //
+  // 取值优先级：客户端**显式**给了 stale_exe 就以客户端为准（它更权威）；
+  //              客户端没给 → 用服务端推断补上。
+  const clientStaleExe = data.stale_exe === "1" || data.stale_exe === 1 ? 1 : 0;
+  const appVersion = String(data.version ?? "").slice(0, 32);
+  const staleResolved = await resolveStaleExe(env, p.id, appVersion, clientStaleExe);
+  const staleExe = staleResolved.stale;
   // tag 可为空（生命周期事件 app_installed/app_opened 没有 tag，客户端发 ""）；
   // 非空时必须匹配 [A-Za-z0-9_-]{1,32}。
   // ⚠️ 契约要点：早先按 {1,32} 严格校验会把空 tag 判成 400 —— 那会让所有生命周期事件
@@ -702,6 +774,9 @@ const LIVE_SQL: string[] = [
      FROM events WHERE name LIKE 'err_%' AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY name`,
   `SELECT 'version' AS metric, app_version AS dim, COUNT(DISTINCT device_id) AS value
      FROM events WHERE ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY app_version`,
+  // 观测（非口径）：被判为「旧副本事件」的条数（契约 v3.9 服务端推断 + 客户端标记）
+  `SELECT 'stale' AS metric, '' AS dim, COUNT(*) AS value
+     FROM events WHERE stale_exe=1 AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE}`,
 ];
 
 // ── 看板口令：优先 Authorization: Bearer 头，兼容 ?token= ──────
@@ -941,6 +1016,14 @@ const ROLLUP_SQL: string[] = [
     WHERE ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
       AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1, 3`,
+  // 观测（非口径）：被判为「旧副本事件」的条数（契约 v3.9 服务端推断 + 客户端标记）
+  `SELECT date(ts,'unixepoch') AS day, 'stale' AS metric, '' AS dim,
+          COUNT(*) AS value
+     FROM events
+    WHERE stale_exe = 1
+      AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
+      AND ${TEST_DEVICE_EXCLUDE}
+    GROUP BY 1`,
 ];
 
 async function rollupAndCleanup(env: Env) {
