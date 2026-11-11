@@ -53,3 +53,6 @@ enabled = true
 # DASHBOARD_TOKEN 走 secret：wrangler secret put DASHBOARD_TOKEN
 # INGEST_KEY 走 secret：wrangler secret put INGEST_KEY
 #   上报端必须带 X-Ingest-Key 头；未配置时服务端 fail closed（返 500，不放行）。
+
+# 版本维度口径：raw=按事件自带版本分桶（现状，默认）| by_device_max=每设备归到其最新版本
+VERSION_DIMENSION_MODE = "raw"

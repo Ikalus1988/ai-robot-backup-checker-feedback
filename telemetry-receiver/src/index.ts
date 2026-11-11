@@ -40,6 +40,8 @@ export interface Env {
   RATE_LIMIT_PER_MIN?: string;
   /** 每 isolate 每小时允许的**单设备**上报请求数（超出 → 429） */
   DEVICE_LIMIT_PER_HOUR?: string;
+  /** 版本维度口径："raw"（按事件自带版本分桶，现状）| "by_device_max"（每设备归到其最新版本） */
+  VERSION_DIMENSION_MODE?: string;
 }
 
 // ── 白名单：显式数组常量，不要用前缀匹配 ──────────────────────
@@ -396,6 +398,65 @@ function takeDeviceToken(deviceId: string, limit: number): { ok: boolean; retryA
     return { ok: false, retryAfterSec: Math.max(1, Math.ceil(remainMs / 1000)) };
   }
   return { ok: true, retryAfterSec: 0 };
+}
+
+// ── 版本维度的两种口径（契约 v3.11）──────────────────────────────
+// "raw"          ：按事件自带的 app_version 分桶（**现状，默认**）
+// "by_device_max"：每台设备归到 device_version 里的**最新已知版本**
+//                  （= 客户端提的「版本维度按 max(app_version) 归并到设备」）
+// ⚠️ **默认 "raw"，第二步归并要等 #6 的 B 组结论拍板后再切**
+//    （客户端原话：「归并口径严格等你们的文件结论」）。
+//    切过去后的含义是「**该设备当前在用的版本**」，
+//    因此设备升级会在 8 天窗口内**回溯**改写它过去那几天的版本归属 —— 这是该口径的固有代价，
+//    切换前必须让业务方知道。
+// ⚠️ 两种口径**都不丢事件**：stale 事件照旧计入功能维度 / events 总数，
+//    「by_device_max」只是不再让一台设备同时占多个版本桶。
+const DEFAULT_VERSION_DIMENSION_MODE = "raw";
+
+function resolveVersionMode(env: Env): string {
+  const raw = env.VERSION_DIMENSION_MODE;
+  if (raw === undefined || raw === null || raw === "") {
+    logOnce(
+      "VERSION_DIMENSION_MODE",
+      "error",
+      `[config] VERSION_DIMENSION_MODE 缺失 → 使用默认 "${DEFAULT_VERSION_DIMENSION_MODE}"。请在 wrangler.toml [vars] 显式配置。`,
+    );
+    return DEFAULT_VERSION_DIMENSION_MODE;
+  }
+  const mode = String(raw).trim();
+  if (mode !== "raw" && mode !== "by_device_max") {
+    throw new ConfigError("VERSION_DIMENSION_MODE", raw, '只允许 "raw" 或 "by_device_max"');
+  }
+  return mode;
+}
+
+/** 版本维度指标（rollup 用：按天 + 维度） */
+function versionMetricSql(env: Env, window: string): string {
+  if (resolveVersionMode(env) === "by_device_max") {
+    return `SELECT date(ts,'unixepoch') AS day, 'version' AS metric, dv.max_version AS dim,
+                   COUNT(DISTINCT e.device_id) AS value
+              FROM events e JOIN device_version dv ON dv.device_id = e.device_id
+             WHERE ${window} AND e.device_id NOT LIKE '0000%'
+             GROUP BY 1, 3`;
+  }
+  return `SELECT date(ts,'unixepoch') AS day, 'version' AS metric, app_version AS dim,
+                 COUNT(DISTINCT device_id) AS value
+            FROM events
+           WHERE ${window} AND device_id NOT LIKE '0000%'
+           GROUP BY 1, 3`;
+}
+
+/** 版本维度指标（看板「今日实时算」用：不分天） */
+function liveVersionSql(env: Env): string {
+  if (resolveVersionMode(env) === "by_device_max") {
+    return `SELECT 'version' AS metric, dv.max_version AS dim, COUNT(DISTINCT e.device_id) AS value
+              FROM events e JOIN device_version dv ON dv.device_id = e.device_id
+             WHERE e.ts >= ?1 AND e.device_id NOT LIKE '0000%'
+             GROUP BY 2`;
+  }
+  return `SELECT 'version' AS metric, app_version AS dim, COUNT(DISTINCT device_id) AS value
+            FROM events WHERE ts >= ?1 AND device_id NOT LIKE '0000%'
+            GROUP BY 2`;
 }
 
 interface TokenBucket { tokens: number; last: number }
@@ -772,12 +833,15 @@ const LIVE_SQL: string[] = [
      FROM events WHERE name LIKE 'feature_%' AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY name`,
   `SELECT 'err' AS metric, name AS dim, COUNT(*) AS value
      FROM events WHERE name LIKE 'err_%' AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY name`,
-  `SELECT 'version' AS metric, app_version AS dim, COUNT(DISTINCT device_id) AS value
-     FROM events WHERE ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY app_version`,
   // 观测（非口径）：被判为「旧副本事件」的条数（契约 v3.9 服务端推断 + 客户端标记）
   `SELECT 'stale' AS metric, '' AS dim, COUNT(*) AS value
      FROM events WHERE stale_exe=1 AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE}`,
 ];
+
+/** 看板实时算用的 SQL（版本维度按当前口径生成，见 versionMetricSql / liveVersionSql） */
+function liveSql(env: Env): string[] {
+  return [...LIVE_SQL, liveVersionSql(env)];
+}
 
 // ── 看板口令：优先 Authorization: Bearer 头，兼容 ?token= ──────
 // 为什么加 header：query 参数会进 CF 访问日志、浏览器历史、Referer 头
@@ -834,7 +898,7 @@ async function handleDashboard(req: Request, url: URL, env: Env) {
   // 1) 今日：实时从明细算（UTC 自然日起点）
   const dayStart = Math.floor(new Date(today + "T00:00:00Z").getTime() / 1000);
   const liveRows: Array<{ day: string; metric: string; dim: string; value: number }> = [];
-  for (const sql of LIVE_SQL) {
+  for (const sql of liveSql(env)) {
     const r = await env.DB.prepare(sql).bind(dayStart).all<{
       metric: string; dim: string; value: number;
     }>();
@@ -1010,12 +1074,6 @@ const ROLLUP_SQL: string[] = [
     WHERE name LIKE 'err_%' AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
       AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1, 3`,
-  `SELECT date(ts,'unixepoch') AS day, 'version' AS metric, app_version AS dim,
-          COUNT(DISTINCT device_id) AS value
-     FROM events
-    WHERE ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
-      AND ${TEST_DEVICE_EXCLUDE}
-    GROUP BY 1, 3`,
   // 观测（非口径）：被判为「旧副本事件」的条数（契约 v3.9 服务端推断 + 客户端标记）
   `SELECT date(ts,'unixepoch') AS day, 'stale' AS metric, '' AS dim,
           COUNT(*) AS value
@@ -1026,13 +1084,65 @@ const ROLLUP_SQL: string[] = [
     GROUP BY 1`,
 ];
 
+/** rollup 用的 SQL（版本维度按当前口径生成，见 versionMetricSql） */
+function rollupSql(env: Env): string[] {
+  const window = `ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')`;
+  return [...ROLLUP_SQL, versionMetricSql(env, window)];
+}
+
+/**
+ * 增量回填 `device_version`：把**窗口内出现过、但表里还没有的设备**补上，
+ * 用语义化比较算出该设备在窗口内出现过的最高 app_version。
+ *
+ * 为什么需要：`device_version` 是从 v3.10 的推断部署之后才开始写的，
+ * 历史事件不在表里 ⇒ 直接切到 "by_device_max" 口径会让**版本维度漏掉老设备**。
+ *
+ * 幂等：每次只处理「device_version 里没有的设备」，且用 upsert ⇒ 可重跑。
+ * 规模：查询走 events 的窗口扫描 + device_version 的小表子查询；写量 = 新设备数（一次性）。
+ */
+async function backfillDeviceVersion(env: Env): Promise<void> {
+  try {
+    const windowStart = Math.floor(Date.now() / 1000) - ROLLUP_WINDOW_DAYS * 86400;
+    const rows = await env.DB.prepare(
+      `SELECT DISTINCT e.device_id AS device_id, e.app_version AS app_version
+         FROM events e
+        WHERE e.ts >= ?1 AND e.app_version <> ''
+          AND e.device_id NOT IN (SELECT device_id FROM device_version)`,
+    ).bind(windowStart).all<{ device_id: string; app_version: string }>();
+
+    const best = new Map<string, string>();
+    for (const r of rows.results ?? []) {
+      const cur = best.get(r.device_id);
+      if (!cur || compareVersions(r.app_version, cur) > 0) best.set(r.device_id, r.app_version);
+    }
+    if (best.size === 0) return;
+    const now = Math.floor(Date.now() / 1000);
+    const stmts = [...best.entries()].map(([dev, ver]) =>
+      env.DB.prepare(
+        `INSERT INTO device_version (device_id, max_version, updated_at) VALUES (?1,?2,?3)
+         ON CONFLICT(device_id) DO UPDATE SET max_version=excluded.max_version,
+                                                updated_at=excluded.updated_at`,
+      ).bind(dev, ver, now),
+    );
+    // 分批（一次别塞太多语句）
+    for (let i = 0; i < stmts.length; i += 100) {
+      await env.DB.batch(stmts.slice(i, i + 100));
+    }
+    console.log(`[backfill] device_version 补齐 ${best.size} 台设备`);
+  } catch (err) {
+    console.error("[backfill] device_version 回填失败（不影响其它聚合）：", err);
+  }
+}
+
 async function rollupAndCleanup(env: Env) {
   // 阈值统一解析：RETENTION_DAYS 缺失/非法 → 抛（顶层已改成记日志）
   const retention = requirePositiveInt(env, "RETENTION_DAYS");
   const backlog = resolveBacklogLimit(env);
 
   // 1) 聚合：UPSERT 覆盖写，可重跑
-  for (const sql of ROLLUP_SQL) {
+  //    先回填 device_version（"by_device_max" 口径的前提），再算指标
+  await backfillDeviceVersion(env);
+  for (const sql of rollupSql(env)) {
     await env.DB.prepare(
       `INSERT INTO daily_rollup (day, metric, dim, value) ${sql}
        ON CONFLICT(day, metric, dim) DO UPDATE SET value = excluded.value`,

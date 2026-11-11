@@ -73,3 +73,7 @@ enabled = true
 # INGEST_KEY 同样用 secret（`wrangler secret put INGEST_KEY`）：
 #   上报端必须带 `X-Ingest-Key: <key>` 头，否则一律 401；
 #   INGEST_KEY 未配置时服务端 **fail closed**（返 500，不放行）。
+
+# 版本维度口径：raw=按事件自带版本分桶（现状，默认）| by_device_max=每设备归到其最新版本
+# ⚠️ 归并口径要等 #6 的 B 组结论拍板后再切（契约 v3.11）
+VERSION_DIMENSION_MODE = "raw"
