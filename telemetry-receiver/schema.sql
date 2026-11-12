@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS events (
   os          TEXT NOT NULL DEFAULT '',
   ts          INTEGER NOT NULL,           -- 事件发生时间（优先取客户端 timestamp）
   recv_ts     INTEGER NOT NULL,            -- 服务端接收时间（回退统计用）
-  stale_exe   INTEGER NOT NULL DEFAULT 0   -- 契约 v3.5.1：来自旧 exe 副本的事件标记（客户端判定）
+  stale_exe   INTEGER NOT NULL DEFAULT 0,  -- 客户端标记：该事件来自一个**更旧的 exe 副本**（客户端判定，创建时定格）
+  version_below_max INTEGER NOT NULL DEFAULT 0  -- 服务端推断：本事件版本**低于该设备见过的最高版本**
 );
 -- 幂等：部分唯一索引，补发风暴重放不会重复计数、也不重复计费
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id) WHERE event_id <> '';
@@ -52,7 +53,7 @@ CREATE TABLE IF NOT EXISTS gate (
   paused     INTEGER NOT NULL DEFAULT 0   -- 存储闸门：清理跟不上写入时置 1
 );
 
--- 每台设备在本库见过的**最高 app_version**（服务端 stale 推断的依据）。
+-- 每台设备在本库见过的**最高 app_version**（服务端推断的依据）。
 -- 由服务端维护：事件到达时点查，比高则更新。写只发生在首见/版本升级时。
 CREATE TABLE IF NOT EXISTS device_version (
   device_id   TEXT PRIMARY KEY,
@@ -60,18 +61,16 @@ CREATE TABLE IF NOT EXISTS device_version (
   updated_at  INTEGER NOT NULL DEFAULT 0
 );
 
--- ── 已有库的迁移（v3.9：服务端 stale 推断）──────────────────────
--- 首次加上 device_version 表时执行过：
---   CREATE TABLE IF NOT EXISTS device_version (
---     device_id   TEXT PRIMARY KEY,
---     max_version TEXT NOT NULL DEFAULT '',
---     updated_at  INTEGER NOT NULL DEFAULT 0
---   );
+-- ── 已有库的迁移（v3.9 / v3.11）────────────────────────────────
+-- 第一次加上 stale_exe 列时执行过：
+--   ALTER TABLE events ADD COLUMN stale_exe INTEGER NOT NULL DEFAULT 0;
+-- 后来发现**服务端推断不能写进 stale_exe**（两种语义不同，见列注释），
+-- 于是拆分出另一列（2026-11-11 已在远端执行）：
+--   ALTER TABLE events ADD COLUMN version_below_max INTEGER NOT NULL DEFAULT 0;
 --
--- 回填（可选）：服务端推断是**顺序依赖**的——若旧副本先跑，它的事件在写入时还不知道
--- 有更高版本，会留 stale_exe=0；等高版本出现后可手动回填：
---   UPDATE events SET stale_exe = 1
---    WHERE stale_exe = 0 AND app_version < (
---      SELECT max_version FROM device_version WHERE device_id = events.device_id);
+-- 回填（可选）：把窗口内「版本低于本设备最高版本」的事件标上 version_below_max。
+-- ⚠️ **版本号必须语义化比较**（'6.9.0' > '6.26.0' 按字符串比是反的），
+--    所以这条**不能**写成一条纯 SQL；实际实现是「SQL 筛出候选行 + JS 里语义化比较 + 按 id 批量 UPDATE」
+--    （见 src/index.ts 的 markVersionBelowMax，cron 每次跑都会自动补）。
 -- ⚠️ events 表**刻意没建 device_id 索引**（看板去重走 rollup），这条回填会**全表扫**，
 --    行数大时慎用（只在新版本上线后的短期窗口内跑）。

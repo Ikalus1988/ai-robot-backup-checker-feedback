@@ -490,8 +490,8 @@ async function resolveStaleExe(
   deviceId: string,
   version: string,
   clientStale: number,
-): Promise<{ stale: number }> {
-  if (!version) return { stale: clientStale };
+): Promise<{ belowMax: number }> {
+  if (!version) return { belowMax: 0 };
   try {
     const row = await env.DB.prepare(
       `SELECT max_version FROM device_version WHERE device_id = ?1`,
@@ -503,7 +503,7 @@ async function resolveStaleExe(
          ON CONFLICT(device_id) DO UPDATE SET max_version=excluded.max_version,
                                                 updated_at=excluded.updated_at`,
       ).bind(deviceId, version, Math.floor(Date.now() / 1000)).run();
-      return { stale: clientStale };
+      return { belowMax: 0 };
     }
     const cmp = compareVersions(version, known);
     if (cmp > 0) {
@@ -511,14 +511,13 @@ async function resolveStaleExe(
       await env.DB.prepare(
         `UPDATE device_version SET max_version=?2, updated_at=?3 WHERE device_id=?1`,
       ).bind(deviceId, version, Math.floor(Date.now() / 1000)).run();
-      return { stale: clientStale };
+      return { belowMax: 0 };
     }
-    if (cmp < 0) return { stale: 1 };  // 比已知最高版本旧 → 服务端判定为旧副本事件
-    return { stale: clientStale };
+    if (cmp < 0) return { belowMax: 1 };  // 版本低于该设备最高版本（≠「旧副本」语义！）
+    return { belowMax: 0 };
   } catch (err) {
-    // 推断失败**不能影响上报**（这是观测增强，不是准入条件）：降级为只用客户端标记
-    console.error("[stale] 推断失败，降级为客户端标记：", err);
-    return { stale: clientStale };
+    console.error("[stale] 推断失败，降级为不推断：", err);
+    return { belowMax: 0 };
   }
 }
 const bucket: TokenBucket = { tokens: 0, last: 0 };
@@ -617,15 +616,23 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
   //   ① ≤6.25.1 的旧副本**代码早于 v3.5.1**，压根没有标记逻辑 → 永远标不上；
   //   ② ≥6.26.0 的旧副本**有**逻辑，但「判 stale 的依据」（state 里的 max_app_version）
   //      会被更旧的副本写回时抹掉 → 也标不上（客户端已在 v6.26.1 修，但 ≤6.25.1 修不了）。
-  // 所以服务端**再推断一遍**（契约 v3.9 第一步）：按「同一 device_id 出现过的最高 app_version」
-  // 判定本事件是否来自更旧的副本。
   //
-  // 取值优先级：客户端**显式**给了 stale_exe 就以客户端为准（它更权威）；
-  //              客户端没给 → 用服务端推断补上。
+  // ⚠️⚠️ **两种语义必须分开存，千万别混**（2026-11-11 踩过这个坑并已修正）：
+  //   `stale_exe`         = **客户端的标记**：这个事件是由一个**比本机最高版本更旧的 exe 副本**
+  //                         创建的（判定在事件创建时定格）→ 这是「二进制副本」的语义。
+  //   `version_below_max` = **服务端推断**：本事件的版本**低于该设备见过的最高版本**。
+  //                         ⚠️ 这是**另一个东西**：「用户升级前的正常历史事件」也满足它，
+  //                         所以它**不能**被当成「旧副本事件」用 —— 否则会把用户的历史数据
+  //                         当成脏数据丢掉。服务端只有最终状态，**认不出**「旧副本」语义
+  //                         （≤6.25.1 那类事件服务端无法可靠区分）。
+  //                         它的用途：① 观测「这台设备身上出现了几个版本」；
+  //                         ② 版本维度归并（by_device_max）时用 device_version join，
+  //                         **不依赖**这个列 ⇒ 不丢历史事件。
   const clientStaleExe = data.stale_exe === "1" || data.stale_exe === 1 ? 1 : 0;
   const appVersion = String(data.version ?? "").slice(0, 32);
   const staleResolved = await resolveStaleExe(env, p.id, appVersion, clientStaleExe);
-  const staleExe = staleResolved.stale;
+  const staleExe = clientStaleExe;              // 只存客户端的标记，服务端不改写
+  const versionBelowMax = staleResolved.belowMax; // 服务端推断另存一列
   // tag 可为空（生命周期事件 app_installed/app_opened 没有 tag，客户端发 ""）；
   // 非空时必须匹配 [A-Za-z0-9_-]{1,32}。
   // ⚠️ 契约要点：早先按 {1,32} 严格校验会把空 tag 判成 400 —— 那会让所有生命周期事件
@@ -699,8 +706,8 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
   const statements = [
     env.DB.prepare(
       `INSERT OR IGNORE INTO events
-         (event_id, device_id, name, tag, app_version, os, ts, recv_ts, stale_exe)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)`,
+         (event_id, device_id, name, tag, app_version, os, ts, recv_ts, stale_exe, version_below_max)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)`,
     ).bind(
       eventId,
       p.id,
@@ -711,6 +718,7 @@ async function handleSend(req: Request, env: Env, _ctx: ExecutionContext) {
       ts,
       recvTs,
       staleExe,
+      versionBelowMax,
     ),
   ];
 
@@ -833,9 +841,12 @@ const LIVE_SQL: string[] = [
      FROM events WHERE name LIKE 'feature_%' AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY name`,
   `SELECT 'err' AS metric, name AS dim, COUNT(*) AS value
      FROM events WHERE name LIKE 'err_%' AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE} GROUP BY name`,
-  // 观测（非口径）：被判为「旧副本事件」的条数（契约 v3.9 服务端推断 + 客户端标记）
+  // 观测（非口径）：① 客户端标记的「来自旧 exe 副本」事件（权威语义）
   `SELECT 'stale' AS metric, '' AS dim, COUNT(*) AS value
      FROM events WHERE stale_exe=1 AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE}`,
+  // 观测（非口径）：② 版本低于本设备最高版本的事件（⚠️ 含用户升级前的正常历史事件，不是「旧副本」）
+  `SELECT 'below_max' AS metric, '' AS dim, COUNT(*) AS value
+     FROM events WHERE version_below_max=1 AND ts >= ?1 AND ${TEST_DEVICE_EXCLUDE}`,
 ];
 
 /** 看板实时算用的 SQL（版本维度按当前口径生成，见 versionMetricSql / liveVersionSql） */
@@ -1074,11 +1085,18 @@ const ROLLUP_SQL: string[] = [
     WHERE name LIKE 'err_%' AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
       AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1, 3`,
-  // 观测（非口径）：被判为「旧副本事件」的条数（契约 v3.9 服务端推断 + 客户端标记）
+  // 观测（非口径）：① 客户端标记的「旧 exe 副本」事件 ② 版本低于本设备最高版本的事件
   `SELECT date(ts,'unixepoch') AS day, 'stale' AS metric, '' AS dim,
           COUNT(*) AS value
      FROM events
     WHERE stale_exe = 1
+      AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
+      AND ${TEST_DEVICE_EXCLUDE}
+    GROUP BY 1`,
+  `SELECT date(ts,'unixepoch') AS day, 'below_max' AS metric, '' AS dim,
+          COUNT(*) AS value
+     FROM events
+    WHERE version_below_max = 1
       AND ts >= strftime('%s','now','-${ROLLUP_WINDOW_DAYS} days')
       AND ${TEST_DEVICE_EXCLUDE}
     GROUP BY 1`,
@@ -1134,14 +1152,63 @@ async function backfillDeviceVersion(env: Env): Promise<void> {
   }
 }
 
+/**
+ * 把「同设备下版本更低」的历史事件补标 `version_below_max = 1`（窗口内，可重跑）。
+ *
+ * ⚠️ **它不是 `stale_exe`**：`stale_exe` = 客户端标记的「来自旧 exe 副本」；
+ * 本列 = 「版本低于该设备见过的最高版本」——后者把**用户升级前的正常历史事件**也包含在内，
+ * 所以**不能**拿它当「旧副本」用（会误伤历史数据）。它的用途是：
+ * ① 观测「这台设备身上出现了几个版本」；② 归并口径（by_device_max）时用 device_version join，
+ * 不依赖本列 ⇒ **不丢历史事件**。
+ *
+ * 为什么在 JS 里做而不写成一条 SQL：版本号必须**语义化比较**
+ * （`'6.9.0' > '6.26.0'` 按字符串比是反的）→ SQL 里没有现成的 semver 比较。
+ * 因此：SQL 只筛出「版本与本设备最高版本**不相等**」的候选行（小集合），
+ * 真正的比较在 JS 里做，再按 id 批量 UPDATE。
+ *
+ * 扫描范围限制在 rollup 窗口（8 天）内 —— events.ts 上有索引，代价可控。
+ */
+async function markVersionBelowMax(env: Env): Promise<void> {
+  try {
+    const windowStart = Math.floor(Date.now() / 1000) - ROLLUP_WINDOW_DAYS * 86400;
+    const rows = await env.DB.prepare(
+      `SELECT e.id AS id, e.app_version AS app_version,
+              (SELECT dv.max_version FROM device_version dv WHERE dv.device_id = e.device_id) AS max_version
+         FROM events e
+        WHERE e.version_below_max = 0 AND e.ts >= ?1 AND e.app_version <> ''
+          AND e.app_version <> (SELECT dv.max_version FROM device_version dv
+                                 WHERE dv.device_id = e.device_id)
+        LIMIT 5000`,
+    ).bind(windowStart).all<{ id: number; app_version: string; max_version: string }>();
+
+    const ids: number[] = [];
+    for (const r of rows.results ?? []) {
+      if (!r.max_version) continue;
+      if (compareVersions(r.app_version, r.max_version) < 0) ids.push(r.id);
+    }
+    if (ids.length === 0) return;
+    for (let i = 0; i < ids.length; i += 100) {
+      const chunk = ids.slice(i, i + 100);
+      const stmts = chunk.map((id) =>
+        env.DB.prepare(`UPDATE events SET version_below_max = 1 WHERE id = ?1`).bind(id),
+      );
+      await env.DB.batch(stmts);
+    }
+    console.log(`[below_max] 补标 ${ids.length} 条「版本低于本设备最高版本」事件`);
+  } catch (err) {
+    console.error("[below_max] 历史补标失败（不影响其它聚合）：", err);
+  }
+}
+
 async function rollupAndCleanup(env: Env) {
   // 阈值统一解析：RETENTION_DAYS 缺失/非法 → 抛（顶层已改成记日志）
   const retention = requirePositiveInt(env, "RETENTION_DAYS");
   const backlog = resolveBacklogLimit(env);
 
   // 1) 聚合：UPSERT 覆盖写，可重跑
-  //    先回填 device_version（"by_device_max" 口径的前提），再算指标
+  //    先回填 device_version（"by_device_max" 口径的前提），再补标历史 stale，最后算指标
   await backfillDeviceVersion(env);
+  await markVersionBelowMax(env);
   for (const sql of rollupSql(env)) {
     await env.DB.prepare(
       `INSERT INTO daily_rollup (day, metric, dim, value) ${sql}
