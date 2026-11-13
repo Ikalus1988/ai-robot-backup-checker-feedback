@@ -1032,6 +1032,8 @@ async function handleHealth(env: Env) {
     // 限流配置（注意是 per-isolate，不是全局精确）
     rate_limit_per_min: resolveRateLimit(env),
     rate_limit_scope: "per-isolate",
+    // 版本维度口径：口径切换必须能在运行时直接看到，别只靠翻配置
+    version_dimension_mode: resolveVersionMode(env),
     device_limit_per_hour: resolveDeviceLimit(env),
     device_limit_scope: "per-isolate",
     // 存储闸门：真实判据是「超期未清行数」，阈值可配

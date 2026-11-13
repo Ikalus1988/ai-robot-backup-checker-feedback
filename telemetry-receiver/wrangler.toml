@@ -74,6 +74,10 @@ enabled = true
 #   上报端必须带 `X-Ingest-Key: <key>` 头，否则一律 401；
 #   INGEST_KEY 未配置时服务端 **fail closed**（返 500，不放行）。
 
-# 版本维度口径：raw=按事件自带版本分桶（现状，默认）| by_device_max=每设备归到其最新版本
-# ⚠️ 归并口径要等 #6 的 B 组结论拍板后再切（契约 v3.11）
-VERSION_DIMENSION_MODE = "raw"
+# 版本维度口径：raw=按事件自带版本分桶 | by_device_max=每设备归到其最新版本
+# ✅ 已激活 "by_device_max"（2026-11-13，契约 v3.13）：#6 的 B 组机制结论已确认
+#    （混血构建：新 Rust + 旧前端 dist），#9 的第二步随之收口。
+# ⚠️ 该口径的含义是「该设备**当前在用**的版本」→ 设备升级会在 8 天窗口内
+#    **回溯**改写它过去那几天的版本归属（这是口径的固有代价，见计划书 v3.11/v3.13）。
+#    回滚：改回 "raw" + 一次 deploy。
+VERSION_DIMENSION_MODE = "by_device_max"

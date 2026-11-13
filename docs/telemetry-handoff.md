@@ -8,6 +8,12 @@
 > 代码在本仓 `telemetry-receiver/`，端点 `https://telemetry.misakanet.org/api/send`。
 > 本文件的 §3 已标注"被实现取代"，**实施时以 `telemetry-receiver/` 实际代码为准**。
 >
+> **v1.11 变更（2026-11-13）**：**§7 判据 17 的归并口径已激活**（`VERSION_DIMENSION_MODE=by_device_max`，Worker `9d8a6b0b`）——
+> #6 的 B 组机制结论已确认（混血构建：新 Rust + 旧前端 dist），#9 随之收口。
+> `/healthz` 新增 `version_dimension_mode` 字段（运行时直接可见当前口径）。
+> ⚠️ 该口径的含义是「该设备当前在用的版本」→ 设备升级会回溯改写 8 天窗口内的历史归属；
+> 回滚 = 改回 `raw` + 一次 deploy。
+>
 > **v1.10 变更（2026-11-12）**：**修正判据 16 的语义错误** —— 服务端推断不再写进 `stale_exe`，
 > 改写独立的 **`version_below_max`** 列（见判据 16 与计划书 v3.12）。
 > **v1.9 变更（2026-11-11）**：新增 **§7 判据 17（版本维度归并，待激活）**：
