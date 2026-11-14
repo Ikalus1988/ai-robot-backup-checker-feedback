@@ -3,8 +3,10 @@
   "_note1": "ingest_key 由实施方线下交付（与生产 key 一样的方式），**不要提交进任何仓库**。",
   "_note2": "测试 device_id 首段必须全零（00000000-xxxx-4xxx-xxxx-xxxxxxxxxxxx）——这是双标记的另一半。",
   "_note3": "服务端统计口径已按「非 0000%」天然排除测试数据，无需事后补救。",
+  "_note4": "endpoint 用**自定义域**（与生产同款）。裸 `*.workers.dev` 在部分企业网有 IP 被掐"
+            "（DNS 轮询撞上坏 IP 会表现为「请求落地、响应丢」）；若必须用 workers.dev，请钉住可用 IP。",
   "enabled": true,
-  "endpoint": "https://rbc-telemetry-test.eric-jia1920.workers.dev/api/send",
+  "endpoint": "https://rbc-telemetry-test.misakanet.org/api/send",
   "website_id": "robot-checker-test",
   "ingest_key": "<测试 INGEST_KEY，由实施方线下交付>",
   "usage_enabled": true
