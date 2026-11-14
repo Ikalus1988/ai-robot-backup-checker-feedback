@@ -211,7 +211,7 @@
 
 | | 生产 | 测试（验收/压测链专用） |
 |---|---|---|
-| endpoint | `https://telemetry.misakanet.org/api/send` | `https://rbc-telemetry-test.eric-jia1920.workers.dev/api/send` |
+| endpoint | `https://telemetry.misakanet.org/api/send` | `https://rbc-telemetry-test.misakanet.org/api/send`（**推荐**，与生产同款；`rbc-telemetry-test.eric-jia1920.workers.dev` 保留但其部分 IP 在客户端企业网被掐）|
 | `website_id` | `robot-backup-checker` | `robot-checker-test` |
 | `INGEST_KEY` | 生产那把（实施方线下交付） | **独立的一把**（指纹 `1913d2e868c16af8`），实施方线下交付 |
 | `device_id` | 客户端生成 UUID v4 | **首段全零**：`00000000-xxxx-4xxx-xxxx-xxxxxxxxxxxx`（测试流量双标记） |
