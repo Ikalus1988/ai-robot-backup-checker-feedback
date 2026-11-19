@@ -8,6 +8,14 @@
 > 代码在本仓 `telemetry-receiver/`，端点 `https://telemetry.misakanet.org/api/send`。
 > 本文件的 §3 已标注"被实现取代"，**实施时以 `telemetry-receiver/` 实际代码为准**。
 >
+> **v1.12 变更（2026-11-19）**：**生产 Worker = `498cb9e6`**（看板页脚加 version 维度口径标注；
+> 代码其余部分与 `9d8a6b0b` 相同）；**测试 Worker = `9eb04d70`**（同代码）；测试库 schema 已补齐
+> （`device_version` 表）。**回归基线刷新**（issue #1）：17 用例矩阵按现行契约在生产重跑 **22/22 PASS**；
+> 两条限流路径经**本地单 isolate** 验证通过（速率第 124 个、单设备第 61 个起 429）。
+> ⚠️ **看板 version 维度是「移动靶」**：`by_device_max` 下窗口内 8 天的历史版本桶**每天被回溯改写**，
+> 同一历史日的 version 数值今天与明天可能不同；`dau / new_users / events / feature_* / err` 不受影响。
+> ⇒ **周报/趋势只引用后者**，version 只报当日快照。
+>
 > **v1.11 变更（2026-11-13）**：**§7 判据 17 的归并口径已激活**（`VERSION_DIMENSION_MODE=by_device_max`，Worker `9d8a6b0b`）——
 > #6 的 B 组机制结论已确认（混血构建：新 Rust + 旧前端 dist），#9 随之收口。
 > `/healthz` 新增 `version_dimension_mode` 字段（运行时直接可见当前口径）。
